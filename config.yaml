@@ -96,6 +96,21 @@ backup_keep_days: 30
 backup_keep_count: 30
 backup_on_start: true
 
+# --- Dashboard + secret gate ------------------------------------------
+# The agent also serves the dashboard at http://127.0.0.1:8000/ while it
+# runs, so the secret gate can open it any time (no separate --dashboard).
+dashboard_on_start: true
+
+# Secret gate: click N times on the desktop, then type the code on the
+# keyboard — the dashboard opens in the browser. Nothing is logged.
+# Change the code from the dashboard Settings page, or here.
+secret_gate:
+  enabled: true
+  clicks: 4
+  code: "1122"
+  click_window_seconds: 2   # the 4 clicks must happen within 2 seconds
+  arm_seconds: 10           # then the code must be typed within 10 seconds
+
 # --- Daily summary ----------------------------------------------------
 # Local rule-based Bengali narrative, no AI API key, no internet.
 # python main.py --ai-summary          (today)

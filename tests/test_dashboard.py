@@ -120,6 +120,125 @@ def test_dashboard_http():
     print("dashboard HTTP tests passed")
 
 
+def test_dashboard_settings():
+    import os
+
+    from deskaudit.dashboard import get_settings, save_settings
+
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "config.yaml").write_text(
+        "poll_interval_seconds: 5\nllm:\n  provider: gemini\n"
+        "  model: gemini-3.5-flash-lite\n  api_key: ''\n",
+        encoding="utf-8")
+    old_env = os.environ.pop("DESKAUDIT_LLM_API_KEY", None)
+    try:
+        view = get_settings(tmp / "config.yaml")
+        assert view["llm"]["provider"] == "gemini"
+        assert view["llm"]["api_key_set"] is False
+        assert "api_key" not in view["llm"]
+        assert view["agent"]["poll_interval_seconds"] == 5
+        assert view["local_exists"] is False
+        # Save a key + a threshold: local file is created, config.yaml untouched.
+        saved = save_settings(tmp / "config.yaml", {
+            "llm": {"api_key": "test-key-123", "model": "gemini-3.5-flash-lite"},
+            "alerts": {"distracting_minutes": 90},
+        })
+        assert saved["llm"]["api_key_set"] is True
+        assert saved["alerts"]["distracting_minutes"] == 90
+        assert "test-key-123" not in json.dumps(saved)  # key never returned
+        local_text = (tmp / "config.local.yaml").read_text(encoding="utf-8")
+        assert "test-key-123" in local_text
+        assert "api_key: ''" in (tmp / "config.yaml").read_text(encoding="utf-8")
+        # Existing local keys survive a later partial save (merge, not replace).
+        save_settings(tmp / "config.yaml", {"agent": {"poll_interval_seconds": 10}})
+        assert "test-key-123" in (tmp / "config.local.yaml").read_text(encoding="utf-8")
+        assert get_settings(tmp / "config.yaml")["agent"]["poll_interval_seconds"] == 10
+        # Empty key clears it; bad values raise and write nothing.
+        save_settings(tmp / "config.yaml", {"llm": {"api_key": ""}})
+        assert get_settings(tmp / "config.yaml")["llm"]["api_key_set"] is False
+        # Secret gate + dashboard_on_start round-trip through the same API.
+        saved = save_settings(tmp / "config.yaml", {
+            "agent": {"dashboard_on_start": False},
+            "secret_gate": {"clicks": 3, "code": "9999"},
+        })
+        assert saved["agent"]["dashboard_on_start"] is False
+        assert saved["secret_gate"]["clicks"] == 3
+        assert saved["secret_gate"]["code"] == "9999"
+        assert saved["secret_gate"]["enabled"] is True
+        try:
+            save_settings(tmp / "config.yaml", {"secret_gate": {"code": "ab12"}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-digit gate code must raise ValueError")
+        try:
+            save_settings(tmp / "config.yaml", {"secret_gate": {"clicks": 99}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("out-of-range click count must raise ValueError")
+        try:
+            save_settings(tmp / "config.yaml", {"agent": {"poll_interval_seconds": 9999}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("out-of-range value must raise ValueError")
+        try:
+            save_settings(tmp / "config.yaml", {"llm": {"provider": "nope"}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("bad provider must raise ValueError")
+    finally:
+        if old_env is not None:
+            os.environ["DESKAUDIT_LLM_API_KEY"] = old_env
+    print("dashboard settings tests passed")
+
+
+def test_dashboard_settings_http():
+    tmp = Path(tempfile.mkdtemp())
+    db, date = seed_db(tmp)
+    db.close()
+    (tmp / "config.yaml").write_text("poll_interval_seconds: 5\n", encoding="utf-8")
+    tagger = Tagger(projects=[Project(name="Office", daily_goal_minutes=240)])
+    server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
+                             tagger=tagger, project_root=tmp,
+                             config_path=tmp / "config.yaml")
+    url = server.start()
+    try:
+        with urllib.request.urlopen(url + "api/settings", timeout=5) as r:
+            data = json.loads(r.read())
+            assert data["agent"]["poll_interval_seconds"] == 5
+            assert data["llm"]["api_key_set"] is False
+        body = json.dumps({"llm": {"api_key": "http-key-1"},
+                           "agent": {"poll_interval_seconds": 7}}).encode("utf-8")
+        req = urllib.request.Request(url + "api/settings", data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+            assert data["ok"] is True
+            assert data["saved"]["llm"]["api_key_set"] is True
+            assert data["saved"]["agent"]["poll_interval_seconds"] == 7
+        assert "http-key-1" in (tmp / "config.local.yaml").read_text(encoding="utf-8")
+        # Bad value -> 400, nothing saved.
+        body = json.dumps({"agent": {"poll_interval_seconds": 9999}}).encode("utf-8")
+        req = urllib.request.Request(url + "api/settings", data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raise AssertionError("expected HTTP 400")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            assert json.loads(e.read())["ok"] is False
+    finally:
+        server.stop()
+    print("dashboard settings HTTP tests passed")
+
+
 if __name__ == "__main__":
     test_dashboard_summary()
     test_dashboard_http()
+    test_dashboard_settings()
+    test_dashboard_settings_http()

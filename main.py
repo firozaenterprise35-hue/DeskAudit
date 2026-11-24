@@ -96,6 +96,7 @@ def setup_logging(log_path: Path) -> logging.Logger:
 
 
 def run_agent(config: Config, log: logging.Logger) -> int:
+    _hide_console()  # background mode: no CMD window on the desktop
     db = Database(config.db_path)
     tagger = load_tagger(config)
     sync_projects_to_db(db, tagger)
@@ -119,6 +120,8 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     watcher = FileWatcher(db, config, tagger=tagger)
     browser = BrowserTracker(db, config, tagger=tagger)
     receiver = None
+    dashboard_server = None
+    gate = None
     pause_file = config.project_root / "PAUSE"
     last_browser_poll = 0.0
     last_alert_check = 0.0
@@ -129,6 +132,10 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         browser.stop()
         if receiver is not None:
             receiver.stop()
+        if gate is not None:
+            gate.stop()
+        if dashboard_server is not None:
+            dashboard_server.stop()
         watcher.stop()
         db.close()
         raise SystemExit(0)
@@ -152,6 +159,31 @@ def run_agent(config: Config, log: logging.Logger) -> int:
             log.info("Browser CDP enabled on port %s", config.browser_cdp_port)
     else:
         log.info("Browser tracking off (browser_enabled: false).")
+
+    # The agent also serves the dashboard, so the secret gate can open it
+    # any time without a second process or console window.
+    if config.dashboard_on_start:
+        try:
+            from deskaudit.dashboard import DashboardServer
+
+            dashboard_server = DashboardServer(
+                config.db_path, host="127.0.0.1", port=8000, tagger=tagger,
+                project_root=config.project_root, alerts_settings=config.alerts,
+                config_path=config.project_root / "config.yaml")
+            url = dashboard_server.start()
+            log.info("Dashboard serving at %s", url)
+        except OSError as exc:
+            log.warning("Dashboard could not start (already running?): %s", exc)
+    if (config.secret_gate or {}).get("enabled", True):
+        try:
+            from deskaudit.secret_gate import start_secret_gate
+
+            gate = start_secret_gate(config.secret_gate, "http://127.0.0.1:8000/", log)
+            if gate is not None:
+                log.info("Secret gate on: %s desktop clicks, then type %s to open the dashboard.",
+                         gate.clicks_needed, gate.code)
+        except Exception as exc:  # the gate must never crash the agent
+            log.warning("Secret gate did not start: %s", exc)
 
     log.info("DeskAudit running. Poll every %ss, idle after %ss. Ctrl+C to stop.",
              config.poll_interval_seconds, config.idle_threshold_seconds)
@@ -200,6 +232,10 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         browser.stop()
         if receiver is not None:
             receiver.stop()
+        if gate is not None:
+            gate.stop()
+        if dashboard_server is not None:
+            dashboard_server.stop()
         watcher.stop()
         db.close()
     return 0
@@ -215,6 +251,58 @@ def _fix_console_encoding() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+
+def _hide_console() -> None:
+    """Hide this process's console window (Windows only, best-effort).
+
+    The agent is meant to run in the background — no CMD/PowerShell
+    window sitting on the desktop. One-shot CLI commands (--report,
+    --ai-summary, ...) keep their console; long-running modes (agent,
+    dashboard) and --hidden hide it. The log file keeps working."""
+    if sys.platform != "win32":
+        return
+    try:
+        import win32con
+        import win32gui
+
+        hwnd = win32gui.GetConsoleWindow()
+        if hwnd:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+    except Exception:
+        pass
+
+
+def _stop_running_agent() -> int:
+    """Stop a running DeskAudit.exe (Windows only). The --stop process
+    is itself named DeskAudit.exe, so it terminates every other process
+    with that name and leaves itself alone."""
+    if sys.platform != "win32":
+        print("--stop works on Windows only (this is not a Windows machine).")
+        return 1
+    import subprocess
+
+    mine = os.getpid()
+    stopped = 0
+    try:
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=30)
+        for line in out.stdout.splitlines():
+            parts = [p.strip().strip('"') for p in line.split('","')]
+            if len(parts) >= 2 and parts[0].lower() == "deskaudit.exe":
+                try:
+                    pid = int(parts[1])
+                except ValueError:
+                    continue
+                if pid != mine:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=30)
+                    stopped += 1
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Could not stop DeskAudit: {exc}")
+        return 1
+    print("DeskAudit stopped." if stopped else "DeskAudit is not running.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -265,6 +353,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Remove the Windows 21:00 daily task")
     parser.add_argument("--dashboard", action="store_true",
                         help="Start the local web dashboard (127.0.0.1:8000)")
+    parser.add_argument("--open-dashboard", action="store_true",
+                        help="Start the dashboard if needed and open it in the browser")
+    parser.add_argument("--hidden", action="store_true",
+                        help="Hide this process's console window (background mode)")
+    parser.add_argument("--stop", action="store_true",
+                        help="Stop a running DeskAudit agent (Windows only)")
     parser.add_argument("--port", type=int, default=8000, help="Dashboard port")
     parser.add_argument("--host", default="127.0.0.1", help="Dashboard host (default 127.0.0.1)")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser")
@@ -280,7 +374,48 @@ def main(argv: list[str] | None = None) -> int:
     log = setup_logging(config.log_path)
     tagger = load_tagger(config)
 
+    if args.hidden:
+        _hide_console()
+
+    if args.stop:
+        return _stop_running_agent()
+
+    if args.open_dashboard:
+        _hide_console()
+        from deskaudit.dashboard import DashboardServer
+
+        db = Database(config.db_path)
+        try:
+            sync_projects_to_db(db, tagger)
+            merge_db_overrides(db, tagger)
+        finally:
+            db.close()
+        url = f"http://{args.host}:{args.port}/"
+        server = None
+        try:
+            server = DashboardServer(config.db_path, host=args.host, port=args.port,
+                                     tagger=tagger, project_root=config.project_root,
+                                     alerts_settings=config.alerts,
+                                     config_path=Path(config_path))
+            url = server.start()
+            print(f"DeskAudit dashboard: {url}")
+        except OSError:
+            print("Dashboard already running — opening it.")
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:
+            pass
+        if server is not None:
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                print("\nDashboard stopped.")
+        return 0
+
     if args.dashboard:
+        _hide_console()
         from deskaudit.dashboard import DashboardServer
 
         db = Database(config.db_path)
@@ -291,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
             db.close()
         server = DashboardServer(config.db_path, host=args.host, port=args.port,
                                  tagger=tagger, project_root=config.project_root,
-                                 alerts_settings=config.alerts)
+                                 alerts_settings=config.alerts,
+                                 config_path=Path(config_path))
         url = server.start()
         print(f"DeskAudit dashboard: {url}")
         print("Local only — press Ctrl+C to stop.")

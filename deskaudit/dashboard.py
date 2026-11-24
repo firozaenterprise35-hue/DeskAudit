@@ -28,6 +28,9 @@ API (all JSON, all local):
   GET /api/narrative?date=YYYY-MM-DD
   GET /api/weekly?end=YYYY-MM-DD&days=7
   GET /api/export?date=YYYY-MM-DD&format=md|csv|browser|projects
+  GET /api/settings — current settings (the API key value is never returned)
+  POST /api/settings — save settings; writes config.local.yaml only,
+    never config.yaml. The agent/dashboard must restart to apply them.
 
 Security: binds to 127.0.0.1 by default. Use --host 0.0.0.0 only on a
 trusted local network — the dashboard shows window titles and URLs.
@@ -36,12 +39,14 @@ trusted local network — the dashboard shows window titles and URLs.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .config import Config
 from .database import Database
 from .report import build_summary
 from .utils import today_str
@@ -222,13 +227,228 @@ def range_summary(db: Database, days: int = 7, end: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Settings — read/write config.local.yaml (never config.yaml, never git)
+# ---------------------------------------------------------------------------
+
+# Editable settings: (section, key) -> (kind, min, max). The API key is
+# write-only: GET reports only whether one is set, never its value.
+_INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
+    ("agent", "poll_interval_seconds"): (1, 60),
+    ("agent", "idle_threshold_seconds"): (60, 3600),
+    ("agent", "browser_poll_seconds"): (10, 600),
+    ("agent", "browser_receiver_port"): (1, 65535),
+    ("alerts", "distracting_minutes"): (1, 1440),
+    ("alerts", "untagged_minutes"): (1, 1440),
+    ("alerts", "untagged_percent"): (1, 100),
+    ("alerts", "idle_minutes"): (1, 1440),
+    ("alerts", "large_download_mb"): (1, 100000),
+    ("alerts", "new_app_min_minutes"): (0, 1440),
+    ("backup", "backup_keep_days"): (1, 365),
+    ("backup", "backup_keep_count"): (1, 1000),
+    ("secret_gate", "clicks"): (2, 8),
+}
+_BOOL_SETTINGS: set[tuple[str, str]] = {
+    ("agent", "browser_enabled"),
+    ("agent", "track_downloads"),
+    ("agent", "track_searches"),
+    ("agent", "browser_receiver_enabled"),
+    ("agent", "dashboard_on_start"),
+    ("alerts", "enabled"),
+    ("alerts", "notify"),
+    ("backup", "backup_on_start"),
+    ("secret_gate", "enabled"),
+}
+_LLM_PROVIDERS = ("gemini", "openai", "anthropic")
+
+
+def _local_path(config_path: Path) -> Path:
+    return Path(config_path).with_name("config.local.yaml")
+
+
+def _read_local_raw(config_path: Path) -> dict:
+    """config.local.yaml as a plain dict ({} when missing/broken)."""
+    import yaml  # type: ignore
+
+    path = _local_path(config_path)
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def get_settings(config_path: str | Path) -> dict:
+    """Current effective settings for the dashboard Settings page.
+
+    Values come from the merged config (config.yaml + local overlay).
+    The LLM API key is never returned — only whether one is set and
+    where it comes from (local file, env var, or nowhere).
+    """
+    from .alerts import DEFAULT_ALERTS
+
+    cfg_path = Path(config_path)
+    cfg = Config.load(cfg_path)
+    local = _read_local_raw(cfg_path)
+    local_llm = local.get("llm") if isinstance(local.get("llm"), dict) else {}
+    if local_llm.get("api_key"):
+        key_source = "local"
+    elif os.environ.get("DESKAUDIT_LLM_API_KEY"):
+        key_source = "env"
+    else:
+        key_source = "none"
+    alerts = {**DEFAULT_ALERTS, **(cfg.alerts or {})}
+    from .secret_gate import DEFAULT_SECRET_GATE
+
+    gate = {**DEFAULT_SECRET_GATE, **(cfg.secret_gate or {})}
+    return {
+        "llm": {
+            "provider": str(cfg.llm.get("provider") or "gemini"),
+            "model": str(cfg.llm.get("model") or ""),
+            "api_key_set": key_source != "none",
+            "api_key_source": key_source,
+        },
+        "agent": {
+            "poll_interval_seconds": int(cfg.poll_interval_seconds),
+            "idle_threshold_seconds": int(cfg.idle_threshold_seconds),
+            "browser_enabled": bool(cfg.browser_enabled),
+            "browser_poll_seconds": int(cfg.browser_poll_seconds),
+            "track_downloads": bool(cfg.track_downloads),
+            "track_searches": bool(cfg.track_searches),
+            "browser_receiver_enabled": bool(cfg.browser_receiver_enabled),
+            "browser_receiver_port": int(cfg.browser_receiver_port),
+            "dashboard_on_start": bool(cfg.dashboard_on_start),
+        },
+        "secret_gate": {
+            "enabled": bool(gate.get("enabled", True)),
+            "clicks": int(gate.get("clicks", 4)),
+            "code": str(gate.get("code", "1122")),
+            "click_window_seconds": int(gate.get("click_window_seconds", 2)),
+            "arm_seconds": int(gate.get("arm_seconds", 10)),
+        },
+        "alerts": {
+            "enabled": bool(alerts.get("enabled", True)),
+            "notify": bool(alerts.get("notify", True)),
+            "distracting_minutes": int(alerts.get("distracting_minutes", 60)),
+            "untagged_minutes": int(alerts.get("untagged_minutes", 60)),
+            "untagged_percent": int(alerts.get("untagged_percent", 50)),
+            "idle_minutes": int(alerts.get("idle_minutes", 120)),
+            "large_download_mb": int(alerts.get("large_download_mb", 500)),
+            "new_app_min_minutes": int(alerts.get("new_app_min_minutes", 5)),
+        },
+        "backup": {
+            "backup_keep_days": int(cfg.backup_keep_days),
+            "backup_keep_count": int(cfg.backup_keep_count),
+            "backup_on_start": bool(cfg.backup_on_start),
+        },
+        "config_path": cfg_path.name,
+        "local_path": _local_path(cfg_path).name,
+        "local_exists": _local_path(cfg_path).exists(),
+        "note": "Saved to config.local.yaml (config.yaml is never changed). "
+                "Restart the agent and the dashboard for changes to take effect.",
+    }
+
+
+def save_settings(config_path: str | Path, updates: dict) -> dict:
+    """Validate `updates` and merge them into config.local.yaml.
+
+    `updates` uses the same sections as get_settings(). Unknown keys are
+    ignored. An empty llm.api_key clears the stored key. Raises
+    ValueError on any invalid value (nothing is written then).
+    Returns the fresh get_settings() view.
+    """
+    import yaml  # type: ignore
+
+    if not isinstance(updates, dict):
+        raise ValueError("settings must be a JSON object")
+    cfg_path = Path(config_path)
+    new_local: dict[str, dict] = {}
+    errors: list[str] = []
+    for section, values in updates.items():
+        if section not in ("llm", "agent", "alerts", "backup", "secret_gate"):
+            continue
+        if not isinstance(values, dict):
+            errors.append(f"{section} must be an object")
+            continue
+        merged: dict = {}
+        for key, value in values.items():
+            if section == "llm" and key == "provider":
+                if value not in _LLM_PROVIDERS:
+                    errors.append(f"llm.provider must be one of {', '.join(_LLM_PROVIDERS)}")
+                else:
+                    merged[key] = value
+            elif section == "llm" and key == "model":
+                if not isinstance(value, str) or not (1 <= len(value) <= 100):
+                    errors.append("llm.model must be a non-empty name")
+                else:
+                    merged[key] = value
+            elif section == "llm" and key == "api_key":
+                if not isinstance(value, str):
+                    errors.append("llm.api_key must be a string")
+                elif value == "":
+                    merged[key] = None  # clear the stored key
+                else:
+                    merged[key] = value
+            elif section == "secret_gate" and key == "code":
+                if not isinstance(value, str) or not value.isdigit() or not (1 <= len(value) <= 8):
+                    errors.append("secret_gate.code must be 1-8 digits")
+                else:
+                    merged[key] = value
+            elif (section, key) in _INT_SETTINGS:
+                lo, hi = _INT_SETTINGS[(section, key)]
+                if isinstance(value, bool) or not isinstance(value, int) or not (lo <= value <= hi):
+                    errors.append(f"{section}.{key} must be an integer {lo}-{hi}")
+                else:
+                    merged[key] = value
+            elif (section, key) in _BOOL_SETTINGS:
+                if not isinstance(value, bool):
+                    errors.append(f"{section}.{key} must be true or false")
+                else:
+                    merged[key] = value
+            # unknown keys are ignored
+        if merged:
+            new_local[section] = merged
+    if errors:
+        raise ValueError("; ".join(errors))
+    if not new_local:
+        return get_settings(cfg_path)
+    # File layout differs from the API grouping: llm/alerts/secret_gate
+    # are nested dicts in the yaml, but agent/backup keys live at the
+    # top level (poll_interval_seconds, backup_keep_days, ...).
+    local = _read_local_raw(cfg_path)
+    for section, values in new_local.items():
+        if section in ("llm", "alerts", "secret_gate"):
+            current = local.get(section)
+            if not isinstance(current, dict):
+                current = {}
+            for key, value in values.items():
+                if value is None:
+                    current.pop(key, None)  # clear
+                else:
+                    current[key] = value
+            local[section] = current
+        else:  # agent, backup: top-level keys
+            for key, value in values.items():
+                if value is None:
+                    local.pop(key, None)
+                else:
+                    local[key] = value
+    path = _local_path(cfg_path)
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(local, f, sort_keys=False, allow_unicode=True)
+    return get_settings(cfg_path)
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
 STATIC_DIR = Path(__file__).resolve().parent / "dashboard_static"
 
 
-def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dict | None = None):
+def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dict | None = None,
+                 config_path: Path | None = None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # keep console quiet
             pass
@@ -360,7 +580,41 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                     self._send_json({"ok": False, "error": f"export {name} not found"}, 404)
                 return
 
+            if parsed.path == "/api/settings":
+                if config_path is None:
+                    self._send_json({"ok": False, "error": "settings unavailable"}, 500)
+                else:
+                    self._send_json(get_settings(config_path))
+                return
+
             self._send_json({"ok": False, "error": "unknown route"}, 404)
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/settings":
+                self._send_json({"ok": False, "error": "unknown route"}, 404)
+                return
+            if config_path is None:
+                self._send_json({"ok": False, "error": "settings unavailable"}, 500)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            try:
+                updates = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, OSError):
+                self._send_json({"ok": False, "error": "invalid JSON body"}, 400)
+                return
+            try:
+                saved = save_settings(config_path, updates)
+            except ValueError as e:
+                self._send_json({"ok": False, "error": str(e)}, 400)
+                return
+            except OSError as e:
+                self._send_json({"ok": False, "error": f"could not save settings: {e}"}, 500)
+                return
+            self._send_json({"ok": True, "saved": saved})
 
     return Handler
 
@@ -368,13 +622,15 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
 class DashboardServer:
     def __init__(self, db_path, host: str = "127.0.0.1", port: int = 8000,
                  tagger=None, project_root: Path | None = None,
-                 alerts_settings: dict | None = None):
+                 alerts_settings: dict | None = None,
+                 config_path: Path | None = None):
         self.db_path = Path(db_path)
         self.host = host
         self.port = port
         self.tagger = tagger
         self.alerts_settings = alerts_settings or {}
         self.project_root = Path(project_root) if project_root else Path(".")
+        self.config_path = Path(config_path) if config_path else None
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -384,7 +640,8 @@ class DashboardServer:
 
     def start(self) -> str:
         handler = make_handler(self.db_path, self.tagger, self.project_root,
-                               alerts_settings=self.alerts_settings)
+                               alerts_settings=self.alerts_settings,
+                               config_path=self.config_path)
         self.server = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self.server.server_address[1]  # 0 -> real port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

@@ -12,6 +12,14 @@ exe on first run.)
 
 block_cipher = None
 
+import os
+
+ICON_PATH = os.path.join(SPECPATH, "installer", "deskaudit.ico")
+# The icon ships in the repo (installer/deskaudit.ico) but the GitHub
+# snapshot push is text-only, so a fresh clone may not have it — build
+# without an icon then, instead of failing.
+ICON_PATH = ICON_PATH if os.path.exists(ICON_PATH) else None
+
 a = Analysis(
     ["main.py"],
     pathex=[],
@@ -54,6 +62,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=True,
+    icon=ICON_PATH,
 )
 
 coll = COLLECT(

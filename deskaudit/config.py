@@ -28,6 +28,23 @@ DEFAULTS = {
     "productive_domains": [],
     "distracting_domains": [],
     "exclude_domains": [],
+    "dashboard_on_start": True,
+    "secret_gate": {
+        "enabled": True,
+        "clicks": 4,
+        "code": "1122",
+        "click_window_seconds": 2,
+        "arm_seconds": 10,
+    },
+}
+
+# Imported lazily to avoid a cycle (secret_gate imports nothing from config).
+DEFAULT_SECRET_GATE = {
+    "enabled": True,
+    "clicks": 4,
+    "code": "1122",
+    "click_window_seconds": 2,
+    "arm_seconds": 10,
 }
 
 
@@ -60,6 +77,8 @@ class Config:
     backup_keep_count: int = 30
     backup_on_start: bool = True
     llm: dict = field(default_factory=dict)
+    dashboard_on_start: bool = True
+    secret_gate: dict = field(default_factory=dict)
     project_root: Path = Path(".")
 
     @classmethod
@@ -128,6 +147,8 @@ class Config:
             backup_keep_count=int(merged.get("backup_keep_count", 30)),
             backup_on_start=bool(merged.get("backup_on_start", True)),
             llm=dict(merged.get("llm", {}) or {}),
+            dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
+            secret_gate={**DEFAULT_SECRET_GATE, **(merged.get("secret_gate", {}) or {})},
             project_root=root,
         )
 

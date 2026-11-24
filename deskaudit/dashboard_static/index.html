@@ -44,6 +44,12 @@ th{color:var(--muted);font-weight:600}
 .legend{font-size:13px;line-height:1.8}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
 #status{font-size:13px;color:var(--muted)}
+.setgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 16px;margin:8px 0}
+.setgrid label{display:block;font-size:13px}
+.setgrid label span{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
+.setgrid input,.setgrid select{width:100%}
+.setgrid input[type=checkbox]{width:auto}
+#setStatus{font-size:13px;margin-left:8px}
 </style>
 </head>
 <body>
@@ -115,6 +121,54 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
     <h2>Untagged — what still needs a project</h2>
     <p class="muted">Add a rule in <code>projects.yaml</code>, then run <code>python main.py --retag</code>. Or run <code>python main.py --suggest-projects</code> for copy-paste rules.</p>
     <div id="untaggedList"></div>
+  </section>
+
+  <section>
+    <h2>⚙️ সেটিংস (Settings)</h2>
+    <p class="muted">Saved to <code>config.local.yaml</code> — <code>config.yaml</code> is never changed. Restart the agent and the dashboard for changes to take effect. The API key is never shown back.</p>
+    <h3>AI সামারি (LLM)</h3>
+    <div class="setgrid">
+      <label><span>Provider</span><select id="set_llm_provider"><option value="gemini">gemini (Google AI Studio)</option><option value="openai">openai (ChatGPT)</option><option value="anthropic">anthropic (Claude)</option></select></label>
+      <label><span>Model</span><input id="set_llm_model" type="text"></label>
+      <label><span>API key <b id="keyStatus"></b></span><input id="set_llm_api_key" type="password" autocomplete="off" placeholder="নতুন চাবি লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_llm_clear_key" type="checkbox"> চাবি মুছে ফেলুন</label></label>
+    </div>
+    <h3>এজেন্ট (Agent)</h3>
+    <div class="setgrid">
+      <label><span>Poll interval (seconds, 1–60)</span><input id="set_poll_interval_seconds" type="number" min="1" max="60"></label>
+      <label><span>Idle threshold (seconds, 60–3600)</span><input id="set_idle_threshold_seconds" type="number" min="60" max="3600"></label>
+      <label><span>Browser poll (seconds, 10–600)</span><input id="set_browser_poll_seconds" type="number" min="10" max="600"></label>
+      <label><span>Extension receiver port (1–65535)</span><input id="set_browser_receiver_port" type="number" min="1" max="65535"></label>
+      <label><input id="set_browser_enabled" type="checkbox"> Browser tracking</label>
+      <label><input id="set_track_downloads" type="checkbox"> Track downloads</label>
+      <label><input id="set_track_searches" type="checkbox"> Track searches</label>
+      <label><input id="set_browser_receiver_enabled" type="checkbox"> Extension receiver (127.0.0.1:8765)</label>
+      <label><input id="set_dashboard_on_start" type="checkbox"> Serve dashboard with the agent (127.0.0.1:8000)</label>
+    </div>
+    <h3>সিক্রেট গেট (Secret gate)</h3>
+    <p class="muted">ডেস্কটপে পরপর কয়েকবার ক্লিক করে কোড টাইপ করলেই ড্যাশবোর্ড খুলবে — কোনো উইন্ডো খোলা রাখতে হয় না।</p>
+    <div class="setgrid">
+      <label><input id="set_gate_enabled" type="checkbox"> Secret gate enabled</label>
+      <label><span>Desktop clicks (2–8)</span><input id="set_gate_clicks" type="number" min="2" max="8"></label>
+      <label><span>Code (1–8 digits)</span><input id="set_gate_code" type="text" inputmode="numeric" autocomplete="off"></label>
+    </div>
+    <h3>অ্যালার্ট (Alerts)</h3>
+    <div class="setgrid">
+      <label><span>Distracting minutes per day (1–1440)</span><input id="set_distracting_minutes" type="number" min="1" max="1440"></label>
+      <label><span>Untagged minutes (1–1440)</span><input id="set_untagged_minutes" type="number" min="1" max="1440"></label>
+      <label><span>Untagged percent (1–100)</span><input id="set_untagged_percent" type="number" min="1" max="100"></label>
+      <label><span>Idle minutes (1–1440)</span><input id="set_idle_minutes" type="number" min="1" max="1440"></label>
+      <label><span>Large download MB (1–100000)</span><input id="set_large_download_mb" type="number" min="1" max="100000"></label>
+      <label><span>New app min minutes (0–1440)</span><input id="set_new_app_min_minutes" type="number" min="0" max="1440"></label>
+      <label><input id="set_alerts_enabled" type="checkbox"> Alerts enabled</label>
+      <label><input id="set_alerts_notify" type="checkbox"> Windows notification</label>
+    </div>
+    <h3>ব্যাকআপ (Backup)</h3>
+    <div class="setgrid">
+      <label><span>Keep days (1–365)</span><input id="set_backup_keep_days" type="number" min="1" max="365"></label>
+      <label><span>Keep count (1–1000)</span><input id="set_backup_keep_count" type="number" min="1" max="1000"></label>
+      <label><input id="set_backup_on_start" type="checkbox"> Backup on agent start</label>
+    </div>
+    <button id="saveSettingsBtn">💾 Save settings</button><span id="setStatus"></span>
   </section>
 </main>
 <footer>DeskAudit dashboard · served from 127.0.0.1 only · <span id="footDate"></span></footer>
@@ -228,7 +282,70 @@ $('refreshBtn').onclick=load;
 document.querySelectorAll('.rangeBtn').forEach(b=>b.onclick=()=>{document.querySelectorAll('.rangeBtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.days=+b.dataset.days;load()});
 $('projectFilter').onchange=renderProjectTable; $('projectSearch').oninput=renderProjectTable; $('appSearch').oninput=renderAppTable;
 let timer=null; $('autoRefresh').onchange=e=>{clearInterval(timer);if(e.target.checked)timer=setInterval(load,30000)};
+async function loadSettings(){
+  let s; try{ s=await fetch('/api/settings').then(x=>x.json()); }catch(e){ $('setStatus').textContent='Settings unavailable.'; return; }
+  if(!s||s.error){ $('setStatus').textContent='Settings unavailable.'; return; }
+  $('set_llm_provider').value=s.llm.provider||'gemini';
+  $('set_llm_model').value=s.llm.model||'';
+  $('keyStatus').textContent=s.llm.api_key_set?'(চাবি সেট করা আছে'+(s.llm.api_key_source==='env'?' — env var থেকে':'')+')':'(চাবি সেট করা নেই)';
+  $('set_llm_api_key').value='';
+  const setNum=(id,v)=>{const el=$(id); if(el) el.value=v};
+  const setChk=(id,v)=>{const el=$(id); if(el) el.checked=!!v};
+  setNum('set_poll_interval_seconds',s.agent.poll_interval_seconds);
+  setNum('set_idle_threshold_seconds',s.agent.idle_threshold_seconds);
+  setNum('set_browser_poll_seconds',s.agent.browser_poll_seconds);
+  setNum('set_browser_receiver_port',s.agent.browser_receiver_port);
+  setChk('set_browser_enabled',s.agent.browser_enabled);
+  setChk('set_track_downloads',s.agent.track_downloads);
+  setChk('set_track_searches',s.agent.track_searches);
+  setChk('set_browser_receiver_enabled',s.agent.browser_receiver_enabled);
+  setChk('set_dashboard_on_start',s.agent.dashboard_on_start);
+  if(s.secret_gate){ setChk('set_gate_enabled',s.secret_gate.enabled); setNum('set_gate_clicks',s.secret_gate.clicks); $('set_gate_code').value=s.secret_gate.code||''; }
+  setNum('set_distracting_minutes',s.alerts.distracting_minutes);
+  setNum('set_untagged_minutes',s.alerts.untagged_minutes);
+  setNum('set_untagged_percent',s.alerts.untagged_percent);
+  setNum('set_idle_minutes',s.alerts.idle_minutes);
+  setNum('set_large_download_mb',s.alerts.large_download_mb);
+  setNum('set_new_app_min_minutes',s.alerts.new_app_min_minutes);
+  setChk('set_alerts_enabled',s.alerts.enabled);
+  setChk('set_alerts_notify',s.alerts.notify);
+  setNum('set_backup_keep_days',s.backup.backup_keep_days);
+  setNum('set_backup_keep_count',s.backup.backup_keep_count);
+  setChk('set_backup_on_start',s.backup.backup_on_start);
+}
+async function saveSettings(){
+  const num=id=>{const v=parseInt($(id).value,10); return Number.isFinite(v)?v:null};
+  const updates={llm:{provider:$('set_llm_provider').value,model:$('set_llm_model').value.trim()},agent:{},alerts:{},backup:{}};
+  const key=$('set_llm_api_key').value.trim();
+  if($('set_llm_clear_key').checked) updates.llm.api_key='';
+  else if(key) updates.llm.api_key=key;
+  const ints={poll_interval_seconds:'set_poll_interval_seconds',idle_threshold_seconds:'set_idle_threshold_seconds',browser_poll_seconds:'set_browser_poll_seconds',browser_receiver_port:'set_browser_receiver_port'};
+  for(const [k,id] of Object.entries(ints)){const v=num(id); if(v!==null) updates.agent[k]=v}
+  const alertInts={distracting_minutes:'set_distracting_minutes',untagged_minutes:'set_untagged_minutes',untagged_percent:'set_untagged_percent',idle_minutes:'set_idle_minutes',large_download_mb:'set_large_download_mb',new_app_min_minutes:'set_new_app_min_minutes'};
+  for(const [k,id] of Object.entries(alertInts)){const v=num(id); if(v!==null) updates.alerts[k]=v}
+  const backupInts={backup_keep_days:'set_backup_keep_days',backup_keep_count:'set_backup_keep_count'};
+  for(const [k,id] of Object.entries(backupInts)){const v=num(id); if(v!==null) updates.backup[k]=v}
+  updates.agent.browser_enabled=$('set_browser_enabled').checked;
+  updates.agent.track_downloads=$('set_track_downloads').checked;
+  updates.agent.track_searches=$('set_track_searches').checked;
+  updates.agent.browser_receiver_enabled=$('set_browser_receiver_enabled').checked;
+  updates.agent.dashboard_on_start=$('set_dashboard_on_start').checked;
+  updates.secret_gate={enabled:$('set_gate_enabled').checked};
+  const clicks=parseInt($('set_gate_clicks').value,10); if(Number.isFinite(clicks)) updates.secret_gate.clicks=clicks;
+  const code=$('set_gate_code').value.trim(); if(code) updates.secret_gate.code=code;
+  updates.alerts.enabled=$('set_alerts_enabled').checked;
+  updates.alerts.notify=$('set_alerts_notify').checked;
+  updates.backup.backup_on_start=$('set_backup_on_start').checked;
+  $('setStatus').textContent='Saving…';
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)}).then(x=>x.json());
+    if(r.ok){ $('setStatus').textContent='✅ Saved to config.local.yaml. Restart the agent and dashboard to apply.'; $('set_llm_api_key').value=''; $('set_llm_clear_key').checked=false; loadSettings(); }
+    else $('setStatus').textContent='❌ '+(r.error||'Could not save.');
+  }catch(e){ $('setStatus').textContent='❌ Could not save settings.'; }
+}
+$('saveSettingsBtn').onclick=saveSettings;
 load();
+loadSettings();
 </script>
 </body>
 </html>

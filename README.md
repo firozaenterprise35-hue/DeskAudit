@@ -133,11 +133,13 @@ offline. All data comes from `data/deskaudit.db` on this computer.
 | Alerts | Today's alerts with severity badges (🔴 critical / 🟡 warning / 🔵 info) |
 | Daily summary | Bengali narrative for the day, all 7 sections |
 | Weekly review | 7-day review: totals, best / weakest day, top project, trend |
+| ⚙️ Settings | AI (LLM) provider / model / API key, agent, alerts and backup settings — saved to `config.local.yaml` (`config.yaml` is never changed, the key is never shown back). Restart the agent and dashboard to apply. |
 
 API (JSON, local only): `GET /api/health`, `/api/summary?date=YYYY-MM-DD`,
 `/api/range?days=7&end=YYYY-MM-DD`, `/api/alerts?date=YYYY-MM-DD`,
 `/api/narrative?date=YYYY-MM-DD`, `/api/weekly?end=YYYY-MM-DD&days=7`,
-`/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects`.
+`/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects`,
+`GET /api/settings`, `POST /api/settings`.
 
 Options: `python main.py --dashboard --port 8001 --host 127.0.0.1 --no-open`.
 Do not use `--host 0.0.0.0` on an untrusted network — the page shows
@@ -269,23 +271,40 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-10.0.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-10.3.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
-(DeskAudit, DeskAudit Dashboard), and can start the agent with Windows.
-Uninstall from Windows Settings like any other app.
+(DeskAudit, DeskAudit Dashboard, Stop DeskAudit), and can start the
+agent with Windows. Uninstall from Windows Settings like any other app.
+The exe and the installer carry the DeskAudit icon (monitor + magnifier
++ checkmark, `installer/deskaudit.ico`).
 
-**Portable (no install):** unzip the `DeskAudit-v10.1-Windows-exe.zip`
+**Background mode — no console window:** the agent runs in the
+background. It hides its own console at startup, so no CMD or
+PowerShell window sits on the desktop while it works. Stop it from the
+Start Menu ("Stop DeskAudit") or with `DeskAudit.exe --stop`.
+One-shot commands (`--report`, `--ai-summary`, ...) still show their
+console, as usual.
+
+**Secret gate — open the dashboard without any window:** click 4 times
+on any empty spot of the desktop, then type `1122` on the keyboard —
+the dashboard opens in the browser (`http://127.0.0.1:8000/`).
+The agent serves the dashboard itself while it runs, so no separate
+`--dashboard` process is needed. Change the clicks/code (or turn the
+gate off) in `config.yaml` under `secret_gate:` or from the dashboard
+Settings page. Nothing about the gate is logged.
+
+**Portable (no install):** unzip the `DeskAudit-v10.3-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.0.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.3.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-10.0.exe`).
+produces the same `installer\Output\DeskAudit-Setup-10.3.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
@@ -299,8 +318,10 @@ prints correctly in a Windows console (the exe forces UTF-8 output).
 
 ## Version history (git) & rollback
 
-The project is a git repository (`main` branch). No remote is set yet —
-nothing has been pushed anywhere. Useful commands:
+The project is a git repository (`main` branch), also pushed to GitHub
+as one snapshot commit per version
+(https://github.com/firozaenterprise35-hue/DeskAudit — local history is
+full, the remote holds snapshots). Useful commands:
 
 ```bash
 git log --oneline          # history
