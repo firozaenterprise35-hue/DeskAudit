@@ -82,7 +82,7 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   const check = (name, ok, extra = '') =>
     out.push((ok ? 'PASS ' : 'FAIL ') + name + (extra ? ' — ' + extra : ''));
   const kpis = t.$('kpis').innerHTML;
-  check('12 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 12,
+  check('14 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 14,
     (kpis.match(/class="kpi"/g) || []).length + ' found');
   check('hourly has 24 columns', (t.$('hourly').innerHTML.match(/class="col"/g) || []).length === 24);
   check('donut rendered', t.$('donut').innerHTML.includes('<svg'));
@@ -103,6 +103,12 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   check('narrative rendered', t.$('narrative').innerHTML.includes('মূল কাজ'));
   check('weekly rendered', t.$('weekly').innerHTML.includes('মোট হিসাব'));
   check('glance rendered', t.$('glance').innerHTML.includes('active'));
+  check('transfers section rendered', t.$('transferSummary').innerHTML.includes('USB'));
+  check('transfer table has USB copy', t.$('transferTable').innerHTML.includes('report.xlsx'));
+  check('transfer table has cloud domain', t.$('transferTable').innerHTML.includes('drive.google.com'));
+  check('transfer count badge', t.$('transferCount').textContent.includes('2'));
+  check('transfers export link set', t.$('expTransfers').href.includes('format=transfers'));
+  check('transfers settings loaded', String(t.$('set_transfers_poll_seconds').value) === '60');
   check('settings loaded (model filled)', t.$('set_llm_model').value.length > 0);
   check('settings loaded (poll interval)', String(t.$('set_poll_interval_seconds').value) === '5');
   check('export links set',

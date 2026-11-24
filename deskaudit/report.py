@@ -41,6 +41,23 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
         p["goal_percent"] = round(100 * p["active_seconds"] / goal_seconds) if goal_seconds else 0
         p["goal_met"] = bool(goal_seconds and p["active_seconds"] >= goal_seconds)
     untagged = db.untagged_top(date, limit=5)
+    # Data transfers (organisation): counts by type + the latest rows.
+    try:
+        tcounts = db.transfer_counts(date)
+        trows = [
+            {
+                "type": r["transfer_type"],
+                "channel": r["channel"] or "",
+                "file": r["file_name"] or "",
+                "size": r["size_bytes"],
+                "destination": r["destination"] or "",
+                "app": r["app"] or "",
+                "at": r["occurred_at"] or "",
+            }
+            for r in db.transfers_for_date(date, limit=20)
+        ]
+    except Exception:
+        tcounts, trows = {}, []
     top = [
         {
             "app": r["app_name"],
@@ -76,6 +93,11 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
         "file_counts": files,
         "projects": project_rows,
         "untagged": untagged,
+        "transfers": {
+            "total": sum(c.get("count", 0) for c in tcounts.values()),
+            "counts": tcounts,
+            "rows": trows,
+        },
         "browser": {
             "active_seconds": float(b_totals["active"] or 0),
             "productive_seconds": float(b_totals["productive"] or 0),
@@ -161,6 +183,17 @@ def render_text(summary: dict) -> str:
     if untagged_seconds:
         lines.append(f"Untagged: {format_duration(untagged_seconds)} in apps — "
                      "run: python main.py --suggest-projects")
+    tr = summary.get("transfers", {})
+    if tr.get("total"):
+        lines.append(f"Data transfers: {tr['total']} event(s)")
+        for kind, c in sorted(tr.get("counts", {}).items()):
+            lines.append(f"  {kind}: {c.get('count', 0)}")
+        for row in tr.get("rows", [])[:5]:
+            size = f" ({round(row['size'] / 1024 / 1024, 1)} MB)" if row.get("size") else ""
+            lines.append(f"  {row['at'][11:16]} {row['type']} — {row['file'] or row['channel']}"
+                         f" -> {row['destination']}{size}")
+    else:
+        lines.append("Data transfers: none recorded")
     return "\n".join(lines)
 
 
@@ -228,6 +261,20 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"- Domain: {d['value']} — {format_duration(d['seconds'])}")
         for t in untagged.get("titles", [])[:5]:
             lines.append(f"- Title: {t['value']} — {format_duration(t['seconds'])}")
+    tr = summary.get("transfers", {})
+    lines += ["", "## Data transfers", ""]
+    if tr.get("total"):
+        lines.append(f"- **Total events:** {tr['total']}")
+        for kind, c in sorted(tr.get("counts", {}).items()):
+            lines.append(f"- {kind}: {c.get('count', 0)}")
+        lines += ["", "| When | Type | File / Channel | Destination | Size |",
+                  "|---|---|---|---|---:|"]
+        for row in tr.get("rows", []):
+            size = f"{round(row['size'] / 1024 / 1024, 1)} MB" if row.get("size") else "-"
+            lines.append(f"| {row['at']} | {row['type']} | {row['file'] or row['channel']} | "
+                         f"{row['destination']} | {size} |")
+    else:
+        lines.append("- No data transfers recorded.")
     return "\n".join(lines) + "\n"
 
 
@@ -263,4 +310,13 @@ def generate_report(db: Database, date: str | None = None,
             writer.writerow([p["project"], int(p["active_seconds"]), int(p["app_seconds"]),
                              int(p["browser_seconds"]), p["file_events"], p["visits"],
                              p["goal_minutes"], p.get("goal_percent", 0)])
+    transfers_csv = out_dir / f"{date}-transfers.csv"
+    with transfers_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["occurred_at", "type", "channel", "file", "size_bytes",
+                         "destination", "app"])
+        for row in summary.get("transfers", {}).get("rows", []):
+            writer.writerow([row["at"], row["type"], row["channel"], row["file"],
+                             row["size"] if row["size"] is not None else "",
+                             row["destination"], row["app"]])
     return text, md_path, csv_path

@@ -16,6 +16,7 @@ Usage:
     python main.py --dashboard [--port 8000] [--host 127.0.0.1]
     python main.py --alerts [--date 2026-11-23] [--notify]
     python main.py --alerts-list [--date 2026-11-23] [--unread]
+    python main.py --transfers [--date 2026-11-23]  # data transfers today
     python main.py --ai-summary [--date 2026-11-23] [--weekly] [--llm]
     python main.py --backup | --backup-list | --restore <file> | --restore --latest
     python main.py --evening-job          # backup + alerts + daily summary (9pm job)
@@ -122,9 +123,11 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     receiver = None
     dashboard_server = None
     gate = None
+    transfer_monitor = None
     pause_file = config.project_root / "PAUSE"
     last_browser_poll = 0.0
     last_alert_check = 0.0
+    last_transfer_scan = 0.0
 
     def shutdown(*_args):
         log.info("Shutting down, closing current session...")
@@ -160,6 +163,18 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     else:
         log.info("Browser tracking off (browser_enabled: false).")
 
+    # Data Transfer Monitor (organisation): USB / cloud / email / message /
+    # print / sensitive folders / large moves. Metadata only.
+    if (config.transfers or {}).get("enabled", True):
+        try:
+            from deskaudit.transfers import TransferMonitor
+
+            transfer_monitor = TransferMonitor(db, config.transfers, log)
+            log.info("Data Transfer Monitor on: sensitive folders: %s",
+                     ", ".join(transfer_monitor.sensitive_folders) or "none set")
+        except Exception as exc:  # transfers must never crash the agent
+            log.warning("Data Transfer Monitor did not start: %s", exc)
+
     # The agent also serves the dashboard, so the secret gate can open it
     # any time without a second process or console window.
     if config.dashboard_on_start:
@@ -169,7 +184,8 @@ def run_agent(config: Config, log: logging.Logger) -> int:
             dashboard_server = DashboardServer(
                 config.db_path, host="127.0.0.1", port=8000, tagger=tagger,
                 project_root=config.project_root, alerts_settings=config.alerts,
-                config_path=config.project_root / "config.yaml")
+                config_path=config.project_root / "config.yaml",
+                transfers_settings=config.transfers)
             url = dashboard_server.start()
             log.info("Dashboard serving at %s", url)
         except OSError as exc:
@@ -204,13 +220,26 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 if counts["visits"] or counts["downloads"]:
                     log.info("Browser history: %s new visits, %s downloads, %s searches",
                              counts["visits"], counts["downloads"], counts["searches"])
+            # Data transfers: scan every poll_seconds (USB / print / browser / files).
+            if (transfer_monitor is not None
+                    and now_ts - last_transfer_scan >= int(
+                        (config.transfers or {}).get("poll_seconds", 60))):
+                last_transfer_scan = now_ts
+                try:
+                    counts = transfer_monitor.scan_today()
+                    new = sum(counts.values())
+                    if new:
+                        log.info("Transfers detected: %s", counts)
+                except Exception as exc:  # transfers must never crash the agent
+                    log.warning("Transfer scan failed: %s", exc)
             # Alerts: re-check every 30 minutes while the agent runs.
             if config.alerts.get("enabled", True) and now_ts - last_alert_check >= 1800:
                 last_alert_check = now_ts
                 try:
                     from deskaudit.alerts import check_alerts, notify_windows, save_alerts
 
-                    found = check_alerts(db, today_str(), settings=config.alerts, tagger=tagger)
+                    found = check_alerts(db, today_str(), settings=config.alerts, tagger=tagger,
+                                         transfer_settings=config.transfers)
                     new = save_alerts(db, found)
                     for a in new:
                         log.warning("ALERT [%s] %s", a.severity, a.title)
@@ -351,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--alerts-list", action="store_true",
                         help="List stored alerts")
     parser.add_argument("--unread", action="store_true", help="With --alerts-list, unread only")
+    parser.add_argument("--transfers", action="store_true",
+                        help="Scan for data transfers and list today's (USB / cloud / email / print)")
     parser.add_argument("--notify", action="store_true",
                         help="With --alerts, also try a Windows notification")
     parser.add_argument("--ai-summary", action="store_true",
@@ -415,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
             server = DashboardServer(config.db_path, host=args.host, port=args.port,
                                      tagger=tagger, project_root=config.project_root,
                                      alerts_settings=config.alerts,
-                                     config_path=Path(config_path))
+                                     config_path=Path(config_path),
+                                     transfers_settings=config.transfers)
             url = server.start()
             print(f"DeskAudit dashboard: {url}")
         except OSError:
@@ -446,7 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         server = DashboardServer(config.db_path, host=args.host, port=args.port,
                                  tagger=tagger, project_root=config.project_root,
                                  alerts_settings=config.alerts,
-                                 config_path=Path(config_path))
+                                 config_path=Path(config_path),
+                                 transfers_settings=config.transfers)
         url = server.start()
         print(f"DeskAudit dashboard: {url}")
         print("Local only — press Ctrl+C to stop.")
@@ -553,7 +586,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Backup saved: {dest}")
             except FileNotFoundError:
                 print("No database yet — backup skipped.")
-            found = check_alerts(db, today_str(), settings=config.alerts, tagger=tagger)
+            found = check_alerts(db, today_str(), settings=config.alerts, tagger=tagger,
+                                 transfer_settings=config.transfers)
             new = save_alerts(db, found)
             print(f"Alerts: {len(found)} found, {len(new)} new.")
             result, path = save_daily_summary(
@@ -575,7 +609,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sync_projects_to_db(db, tagger)
             merge_db_overrides(db, tagger)
-            found = check_alerts(db, date, settings=config.alerts, tagger=tagger)
+            found = check_alerts(db, date, settings=config.alerts, tagger=tagger,
+                                 transfer_settings=config.transfers)
             new = save_alerts(db, found)
         finally:
             db.close()
@@ -589,6 +624,34 @@ def main(argv: list[str] | None = None) -> int:
             if (args.notify or config.alerts.get("notify")) and new:
                 print("Notification sent." if notify_windows(new) else
                       "(Windows notification not available here — alerts are saved in the DB and shown on the dashboard.)")
+        return 0
+
+    if args.transfers:
+        from deskaudit.transfers import TransferMonitor
+
+        date = args.date or today_str()
+        db = Database(config.db_path)
+        try:
+            monitor = TransferMonitor(db, config.transfers)
+            counts = monitor.scan_today() if date == today_str() else {"browser": 0, "files": 0}
+            if date != today_str():
+                monitor.scan_browser_channels(date)
+                monitor.scan_file_events(date)
+            rows = db.transfers_for_date(date, limit=100)
+            tcounts = db.transfer_counts(date)
+        finally:
+            db.close()
+        total = sum(c.get("count", 0) for c in tcounts.values())
+        if not total:
+            print(f"No data transfers recorded for {date}.")
+        else:
+            print(f"Data transfers for {date}: {total} event(s)")
+            for kind, c in sorted(tcounts.items()):
+                print(f"  {kind}: {c['count']}")
+            for r in rows:
+                size = f" ({round(r['size_bytes'] / 1024 / 1024, 1)} MB)" if r["size_bytes"] else ""
+                print(f"  {r['occurred_at'][11:16]} {r['transfer_type']} — "
+                      f"{r['file_name'] or r['channel']} -> {r['destination']}{size}")
         return 0
 
     if args.alerts_list:
@@ -786,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nSaved: {md_path}\nSaved: {csv_path}")
         print(f"Saved: {Path(config.project_root) / 'reports' / (args.date or today_str())}-browser.csv")
         print(f"Saved: {Path(config.project_root) / 'reports' / (args.date or today_str())}-projects.csv")
+        print(f"Saved: {Path(config.project_root) / 'reports' / (args.date or today_str())}-transfers.csv")
         return 0
 
     if args.once:

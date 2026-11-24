@@ -16,6 +16,16 @@ Rules (all thresholds live in config.yaml under ``alerts:``):
   * idle_over — idle time over the daily limit
   * large_download — a single download over the size limit
 
+Data-transfer rules (thresholds live in config.yaml under ``transfers:``,
+passed in as ``transfer_settings``):
+  * usb_insert — a USB drive was connected
+  * usb_file_copy — files were copied onto a USB drive
+  * cloud_upload — cloud-drive use over the daily limit
+  * communication_use — email / messaging channel use over the daily limit
+  * print_job — a document was printed
+  * sensitive_copy — a file was copied OUT of a sensitive folder
+  * large_transfer — a single moved file over the size limit
+
 Usage:
     python main.py --alerts            # check today, save new ones, print them
     python main.py --alerts --date 2026-11-23
@@ -90,7 +100,8 @@ def _hour(ts: str) -> int:
 
 
 def check_alerts(db: Database, date: str | None = None,
-                 settings: dict | None = None, tagger=None) -> list[Alert]:
+                 settings: dict | None = None, tagger=None,
+                 transfer_settings: dict | None = None) -> list[Alert]:
     """Evaluate every rule for one day. Pure read — saving is separate."""
     date = date or today_str()
     cfg = {**DEFAULT_ALERTS, **(settings or {})}
@@ -248,6 +259,113 @@ def check_alerts(db: Database, date: str | None = None,
                 f"{d['browser']} থেকে {d['file']} ডাউনলোড হয়েছে "
                 f"({round(d['size'] / 1024 / 1024, 1)} MB)।",
                 {"file": d["file"], "size": d["size"]}, date))
+
+    # -- Data transfers (organisation) ------------------------------------
+    # Thresholds come from the transfers: section, not alerts:.
+    from .transfers import DEFAULT_TRANSFERS
+
+    tcfg = {**DEFAULT_TRANSFERS, **(transfer_settings or {})}
+    if tcfg.get("enabled", True):
+        try:
+            tcounts = db.transfer_counts(date)
+            trows = db.transfers_for_date(date, limit=100)
+        except Exception:
+            tcounts, trows = {}, []
+
+        def _mb(n: int) -> str:
+            return f"{round(n / 1024 / 1024, 1)} MB" if n >= 1024 * 1024 else f"{round(n / 1024, 1)} KB"
+
+        def _seconds_of(kind: str) -> int:
+            total = 0
+            for r in trows:
+                if r["transfer_type"] != kind:
+                    continue
+                try:
+                    total += int(json.loads(r["details"] or "{}").get("seconds", 0) or 0)
+                except (ValueError, TypeError):
+                    continue
+            return total
+
+        def _channels(kind: str) -> list[str]:
+            seen: list[str] = []
+            for r in trows:
+                if r["transfer_type"] == kind and r["channel"] and r["channel"] not in seen:
+                    seen.append(r["channel"])
+            return seen
+
+        # USB inserted
+        if tcfg.get("usb_alert", True):
+            inserts = [r for r in trows if r["transfer_type"] == "usb_insert"]
+            if inserts:
+                drives = ", ".join(sorted({r["channel"] for r in inserts if r["channel"]}))
+                alerts.append(Alert(
+                    "usb_insert", "warning",
+                    f"USB ড্রাইভ লাগানো হয়েছে: {drives}",
+                    f"{date} তারিখে USB ড্রাইভ লাগানো হয়েছে ({drives})। কী কপি হলো দেখে নিন।",
+                    {"drives": drives, "count": len(inserts)}, date))
+        # Files copied onto USB
+        usb = tcounts.get("usb_copy", {})
+        if usb.get("count"):
+            files = [r["file_name"] for r in trows if r["transfer_type"] == "usb_copy"][:5]
+            alerts.append(Alert(
+                "usb_file_copy", "warning",
+                f"USB-তে {usb['count']}টি ফাইল কপি হয়েছে ({_mb(usb['bytes'])})",
+                f"USB ড্রাইভে {usb['count']}টি ফাইল কপি হয়েছে, মোট {_mb(usb['bytes'])}। "
+                f"ফাইল: {', '.join(files)}।",
+                {"count": usb["count"], "bytes": usb["bytes"], "files": files}, date))
+        # Cloud use over the daily limit
+        cloud_seconds = _seconds_of("cloud")
+        if cloud_seconds >= int(tcfg.get("cloud_alert_minutes", 15)) * 60:
+            domains = _channels("cloud")
+            alerts.append(Alert(
+                "cloud_upload", "warning",
+                f"ক্লাউডে {format_duration(cloud_seconds)} ব্যবহার হয়েছে",
+                f"আজ ক্লাউড সাইটে (ড্রাইভ / ড্রপবক্স / WeTransfer ইত্যাদি) "
+                f"{format_duration(cloud_seconds)} সময় গেছে: {', '.join(domains[:5])}। "
+                "আপলোড হয়েছে কি না ট্রান্সফার তালিকা দেখে নিন।",
+                {"seconds": cloud_seconds, "domains": domains}, date))
+        # Email / messaging channel use over the daily limit
+        comm_seconds = _seconds_of("email") + _seconds_of("message")
+        if comm_seconds >= int(tcfg.get("communication_alert_minutes", 30)) * 60:
+            domains = _channels("email") + _channels("message")
+            alerts.append(Alert(
+                "communication_use", "info",
+                f"ইমেইল / মেসেজ চ্যানেলে {format_duration(comm_seconds)} ব্যবহার হয়েছে",
+                f"আজ ইমেইল / মেসেজ মাধ্যমে (Gmail, WhatsApp Web ইত্যাদি) "
+                f"{format_duration(comm_seconds)} সময় গেছে: {', '.join(domains[:5])}।",
+                {"seconds": comm_seconds, "domains": domains}, date))
+        # Print jobs
+        if tcfg.get("print_alert", True):
+            prints = tcounts.get("print", {})
+            if prints.get("count"):
+                docs = [r["file_name"] for r in trows if r["transfer_type"] == "print"][:5]
+                alerts.append(Alert(
+                    "print_job", "info",
+                    f"{prints['count']}টি ডকুমেন্ট প্রিন্ট হয়েছে",
+                    f"আজ {prints['count']}টি ডকুমেন্ট প্রিন্ট হয়েছে। "
+                    f"ডকুমেন্ট: {', '.join(docs)}।",
+                    {"count": prints["count"], "documents": docs}, date))
+        # Sensitive folder copy-out — always critical
+        if tcfg.get("sensitive_copy_alert", True):
+            sens = tcounts.get("sensitive_copy", {})
+            if sens.get("count"):
+                files = [r["file_name"] for r in trows if r["transfer_type"] == "sensitive_copy"][:5]
+                alerts.append(Alert(
+                    "sensitive_copy", "critical",
+                    f"গুরুত্বপূর্ণ ফোল্ডার থেকে {sens['count']}টি ফাইল বাইরে গেছে!",
+                    f"আপনার ঠিক করা গুরুত্বপূর্ণ ফোল্ডার থেকে {sens['count']}টি ফাইল "
+                    f"বাইরে কপি/সরানো হয়েছে: {', '.join(files)}। এখনই যাচাই করুন।",
+                    {"count": sens["count"], "files": files}, date))
+        # Large single-file move
+        large = tcounts.get("large_transfer", {})
+        if large.get("count"):
+            files = [r["file_name"] for r in trows if r["transfer_type"] == "large_transfer"][:5]
+            alerts.append(Alert(
+                "large_transfer", "warning",
+                f"বড় ট্রান্সফার: {', '.join(files)} ({_mb(large['bytes'])})",
+                f"{large['count']}টি বড় ফাইল সরানো/কপি হয়েছে, মোট {_mb(large['bytes'])}। "
+                f"ফাইল: {', '.join(files)}।",
+                {"count": large["count"], "bytes": large["bytes"], "files": files}, date))
     return alerts
 
 

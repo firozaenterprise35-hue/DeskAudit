@@ -125,6 +125,30 @@ def generate_daily_summary(db, date: str | None = None, tagger=None) -> dict:
     else:
         sections.append({"title": "আনট্যাগড", "text": "সব কাজই ট্যাগ করা আছে — আনট্যাগড কিছু নেই।"})
 
+    # Data transfers (organisation)
+    tr = s.get("transfers", {})
+    if tr.get("total"):
+        counts = tr.get("counts", {})
+        parts = []
+        labels = {"usb_copy": "USB-তে কপি", "usb_insert": "USB লাগানো",
+                  "cloud": "ক্লাউড", "email": "ইমেইল", "message": "মেসেজ",
+                  "print": "প্রিন্ট", "sensitive_copy": "গুরুত্বপূর্ণ ফোল্ডার থেকে বাইরে",
+                  "large_transfer": "বড় ট্রান্সফার", "usb_remove": "USB খোলা"}
+        for kind in ("usb_copy", "usb_insert", "cloud", "email", "message",
+                     "print", "sensitive_copy", "large_transfer"):
+            c = counts.get(kind, {})
+            if c.get("count"):
+                parts.append(f"{labels[kind]} {c['count']}টি")
+        sections.append({"title": "ডেটা ট্রান্সফার",
+                         "text": f"আজ মোট {tr['total']}টি ট্রান্সফার ইভেন্ট: " + ", ".join(parts) + "।"})
+        if counts.get("sensitive_copy", {}).get("count"):
+            insights.append("গুরুত্বপূর্ণ ফোল্ডার থেকে ফাইল বাইরে গেছে — অ্যালার্ট দেখে এখনই যাচাই করুন।")
+        if counts.get("usb_copy", {}).get("count"):
+            insights.append("USB ড্রাইভে ফাইল কপি হয়েছে — কী গেল ট্রান্সফার তালিকায় দেখে নিন।")
+    else:
+        sections.append({"title": "ডেটা ট্রান্সফার",
+                         "text": "আজ কোনো ডেটা ট্রান্সফার ধরা পড়েনি — USB কপি, ক্লাউড আপলোড, প্রিন্ট কিছুই হয়নি।"})
+
     # Tomorrow
     if not active:
         suggestions = ["আজ কোনো অ্যাক্টিভিটি রেকর্ড হয়নি — এজেন্ট চালু ছিল কি না দেখে নিন।"]
@@ -180,6 +204,12 @@ def generate_weekly_summary(db, end: str | None = None, days: int = 7,
     trend = _pct(second - first, first) if first else 0
 
     start = rows[0]["date"] if rows else end
+    # Data transfers across the week (organisation).
+    try:
+        week_transfers = db.transfer_count_between(start, end)
+        week_transfer_total = sum(c.get("count", 0) for c in week_transfers.values())
+    except Exception:
+        week_transfers, week_transfer_total = {}, 0
     headline = (
         f"{start} থেকে {end} — {days} দিনে মোট {format_duration(total_active)} অ্যাক্টিভ, "
         f"দিনে গড়ে {format_duration(avg)}।"
@@ -196,6 +226,11 @@ def generate_weekly_summary(db, end: str | None = None, days: int = 7,
                   if best and weakest else "কোনো ডেটা নেই।")},
         {"title": "টপ প্রজেক্ট",
          "text": f"সপ্তাহের টপ প্রজেক্ট {top_project[0] or '—'} — {format_duration(top_project[1])}।" if top_project[0] else "কোনো প্রজেক্টে কাজ হয়নি।"},
+        {"title": "ডেটা ট্রান্সফার",
+         "text": (f"সপ্তাহে মোট {week_transfer_total}টি ট্রান্সফার ইভেন্ট: "
+                  + ", ".join(f"{k} {c['count']}টি" for k, c in sorted(week_transfers.items()) if c["count"])
+                  + "।"
+                  if week_transfer_total else "সপ্তাহে কোনো ডেটা ট্রান্সফার ধরা পড়েনি।")},
         {"title": "ট্রেন্ড",
          "text": (f"সপ্তাহের দ্বিতীয় অর্ধে অ্যাক্টিভ সময় {abs(trend)}% {'বেড়েছে' if trend >= 0 else 'কমেছে'}।"
                   if trend else "সপ্তাহজুড়ে অ্যাক্টিভ সময় প্রায় একই ছিল।")},

@@ -19,15 +19,18 @@ Sections (nothing is hidden behind another tab — one scrollable page):
   * Tables: app sessions, browser domains, top searches, downloads,
     recent file events, projects, untagged items
   * Filters: project dropdown, text search inside every table
+  * Data transfers (organisation): USB copies, cloud / email / message
+    channels, prints, sensitive-folder copies, large transfers
 
 API (all JSON, all local):
   GET /api/health
   GET /api/summary?date=YYYY-MM-DD
   GET /api/range?days=7&end=YYYY-MM-DD
   GET /api/alerts?date=YYYY-MM-DD
+  GET /api/transfers?date=YYYY-MM-DD
   GET /api/narrative?date=YYYY-MM-DD
   GET /api/weekly?end=YYYY-MM-DD&days=7
-  GET /api/export?date=YYYY-MM-DD&format=md|csv|browser|projects
+  GET /api/export?date=YYYY-MM-DD&format=md|csv|browser|projects|transfers
   GET /api/settings — current settings (the API key value is never returned)
   POST /api/settings — save settings; writes config.local.yaml only,
     never config.yaml. The agent/dashboard must restart to apply them.
@@ -174,6 +177,7 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
     untagged_seconds = sum(
         float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", [])
     )
+    tsum = transfer_summary(db, day)
     return {
         **summary,
         "hourly": hourly_activity(db, day),
@@ -181,6 +185,7 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
         "categories": category_totals(db, day),
         "file_types": file_type_totals(db, day),
         "recent_files": recent_file_events(db, day),
+        "transfers": tsum,
         "kpis": {
             "active_seconds": summary["active_seconds"],
             "idle_seconds": summary["idle_seconds"],
@@ -199,7 +204,36 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
             "searches": len(summary["browser"]["searches"]),
             "downloads": len(summary["browser"]["downloads"]),
             "untagged_seconds": untagged_seconds,
+            "transfers_total": tsum["total"],
+            "usb_copies": tsum["counts"].get("usb_copy", {}).get("count", 0),
         },
+    }
+
+
+def transfer_summary(db: Database, day: str) -> dict:
+    """Data transfers for one day: counts by type, latest rows, USB drives."""
+    try:
+        counts = db.transfer_counts(day)
+        rows = db.transfers_for_date(day, limit=50)
+    except Exception:
+        counts, rows = {}, []
+    total = sum(c.get("count", 0) for c in counts.values())
+    return {
+        "date": day,
+        "total": total,
+        "counts": counts,
+        "rows": [{
+            "type": r["transfer_type"], "channel": r["channel"] or "",
+            "file": r["file_name"] or "", "path": r["file_path"] or "",
+            "size_bytes": r["size_bytes"],
+            "destination": r["destination"] or "", "app": r["app"] or "",
+            "at": r["occurred_at"] or "",
+        } for r in rows],
+        "usb_drives": sorted({r["channel"] for r in rows
+                              if r["transfer_type"] in ("usb_insert", "usb_copy", "usb_remove")
+                              and r["channel"]}),
+        "cloud_domains": sorted({r["channel"] for r in rows
+                                 if r["transfer_type"] == "cloud" and r["channel"]}),
     }
 
 
@@ -248,6 +282,12 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("backup", "backup_keep_days"): (1, 365),
     ("backup", "backup_keep_count"): (1, 1000),
     ("secret_gate", "clicks"): (2, 8),
+    ("transfers", "poll_seconds"): (10, 600),
+    ("transfers", "cloud_min_seconds"): (0, 3600),
+    ("transfers", "communication_min_seconds"): (0, 3600),
+    ("transfers", "cloud_alert_minutes"): (1, 1440),
+    ("transfers", "communication_alert_minutes"): (1, 1440),
+    ("transfers", "large_transfer_mb"): (1, 100000),
 }
 _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("agent", "browser_enabled"),
@@ -259,6 +299,14 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("alerts", "notify"),
     ("backup", "backup_on_start"),
     ("secret_gate", "enabled"),
+    ("transfers", "enabled"),
+    ("transfers", "usb_alert"),
+    ("transfers", "print_alert"),
+    ("transfers", "sensitive_copy_alert"),
+}
+# List settings: the UI sends one comma-separated string, stored as a list.
+_LIST_SETTINGS: set[tuple[str, str]] = {
+    ("transfers", "sensitive_folders"),
 }
 _LLM_PROVIDERS = ("gemini", "openai", "anthropic")
 
@@ -302,8 +350,10 @@ def get_settings(config_path: str | Path) -> dict:
         key_source = "none"
     alerts = {**DEFAULT_ALERTS, **(cfg.alerts or {})}
     from .secret_gate import DEFAULT_SECRET_GATE
+    from .transfers import DEFAULT_TRANSFERS
 
     gate = {**DEFAULT_SECRET_GATE, **(cfg.secret_gate or {})}
+    transfers = {**DEFAULT_TRANSFERS, **(cfg.transfers or {})}
     return {
         "llm": {
             "provider": str(cfg.llm.get("provider") or "gemini"),
@@ -344,6 +394,19 @@ def get_settings(config_path: str | Path) -> dict:
             "backup_keep_count": int(cfg.backup_keep_count),
             "backup_on_start": bool(cfg.backup_on_start),
         },
+        "transfers": {
+            "enabled": bool(transfers.get("enabled", True)),
+            "poll_seconds": int(transfers.get("poll_seconds", 60)),
+            "sensitive_folders": [str(f) for f in (transfers.get("sensitive_folders") or [])],
+            "cloud_min_seconds": int(transfers.get("cloud_min_seconds", 60)),
+            "communication_min_seconds": int(transfers.get("communication_min_seconds", 60)),
+            "cloud_alert_minutes": int(transfers.get("cloud_alert_minutes", 15)),
+            "communication_alert_minutes": int(transfers.get("communication_alert_minutes", 30)),
+            "large_transfer_mb": int(transfers.get("large_transfer_mb", 100)),
+            "usb_alert": bool(transfers.get("usb_alert", True)),
+            "print_alert": bool(transfers.get("print_alert", True)),
+            "sensitive_copy_alert": bool(transfers.get("sensitive_copy_alert", True)),
+        },
         "config_path": cfg_path.name,
         "local_path": _local_path(cfg_path).name,
         "local_exists": _local_path(cfg_path).exists(),
@@ -368,7 +431,7 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     new_local: dict[str, dict] = {}
     errors: list[str] = []
     for section, values in updates.items():
-        if section not in ("llm", "agent", "alerts", "backup", "secret_gate"):
+        if section not in ("llm", "agent", "alerts", "backup", "secret_gate", "transfers"):
             continue
         if not isinstance(values, dict):
             errors.append(f"{section} must be an object")
@@ -397,6 +460,17 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
                     errors.append("secret_gate.code must be 1-8 digits")
                 else:
                     merged[key] = value
+            elif (section, key) in _LIST_SETTINGS:
+                # Comma-separated string from the UI -> list of folders.
+                if not isinstance(value, str):
+                    errors.append(f"{section}.{key} must be a comma-separated string")
+                else:
+                    items = [part.strip() for part in value.split(",")]
+                    items = [item for item in items if item]
+                    if any(len(item) > 260 for item in items):
+                        errors.append(f"{section}.{key}: a folder path is too long")
+                    else:
+                        merged[key] = items
             elif (section, key) in _INT_SETTINGS:
                 lo, hi = _INT_SETTINGS[(section, key)]
                 if isinstance(value, bool) or not isinstance(value, int) or not (lo <= value <= hi):
@@ -415,12 +489,12 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
         raise ValueError("; ".join(errors))
     if not new_local:
         return get_settings(cfg_path)
-    # File layout differs from the API grouping: llm/alerts/secret_gate
-    # are nested dicts in the yaml, but agent/backup keys live at the
-    # top level (poll_interval_seconds, backup_keep_days, ...).
+    # File layout differs from the API grouping: llm/alerts/secret_gate/
+    # transfers are nested dicts in the yaml, but agent/backup keys live
+    # at the top level (poll_interval_seconds, backup_keep_days, ...).
     local = _read_local_raw(cfg_path)
     for section, values in new_local.items():
-        if section in ("llm", "alerts", "secret_gate"):
+        if section in ("llm", "alerts", "secret_gate", "transfers"):
             current = local.get(section)
             if not isinstance(current, dict):
                 current = {}
@@ -450,7 +524,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "dashboard_static"
 
 
 def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dict | None = None,
-                 config_path: Path | None = None):
+                 config_path: Path | None = None,
+                 transfers_settings: dict | None = None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # keep console quiet
             pass
@@ -537,7 +612,8 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                 day = _parse_date(get("date"))
                 db = self._open_db()
                 try:
-                    found = check_alerts(db, day, settings=alerts_settings or {}, tagger=tagger)
+                    found = check_alerts(db, day, settings=alerts_settings or {}, tagger=tagger,
+                                         transfer_settings=transfers_settings or {})
                     save_alerts(db, found)
                     rows = db.list_alerts(date=day, limit=50)
                     self._send_json({"date": day, "alerts": [{
@@ -545,6 +621,15 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                         "title": r["title"], "message": r["message"],
                         "is_read": bool(r["is_read"]),
                     } for r in rows]})
+                finally:
+                    db.close()
+                return
+
+            if parsed.path == "/api/transfers":
+                day = _parse_date(get("date"))
+                db = self._open_db()
+                try:
+                    self._send_json(transfer_summary(db, day))
                 finally:
                     db.close()
                 return
@@ -588,7 +673,8 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                 mapping = {"md": (f"{day}.md", "text/markdown"),
                            "csv": (f"{day}.csv", "text/csv"),
                            "browser": (f"{day}-browser.csv", "text/csv"),
-                           "projects": (f"{day}-projects.csv", "text/csv")}
+                           "projects": (f"{day}-projects.csv", "text/csv"),
+                           "transfers": (f"{day}-transfers.csv", "text/csv")}
                 name, ctype = mapping.get(fmt, mapping["md"])
                 path = project_root / "reports" / name
                 if path.exists():
@@ -650,12 +736,14 @@ class DashboardServer:
     def __init__(self, db_path, host: str = "127.0.0.1", port: int = 8000,
                  tagger=None, project_root: Path | None = None,
                  alerts_settings: dict | None = None,
-                 config_path: Path | None = None):
+                 config_path: Path | None = None,
+                 transfers_settings: dict | None = None):
         self.db_path = Path(db_path)
         self.host = host
         self.port = port
         self.tagger = tagger
         self.alerts_settings = alerts_settings or {}
+        self.transfers_settings = transfers_settings or {}
         self.project_root = Path(project_root) if project_root else Path(".")
         self.config_path = Path(config_path) if config_path else None
         self.server: ThreadingHTTPServer | None = None
@@ -668,7 +756,8 @@ class DashboardServer:
     def start(self) -> str:
         handler = make_handler(self.db_path, self.tagger, self.project_root,
                                alerts_settings=self.alerts_settings,
-                               config_path=self.config_path)
+                               config_path=self.config_path,
+                               transfers_settings=self.transfers_settings)
         self.server = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self.server.server_address[1]  # 0 -> real port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

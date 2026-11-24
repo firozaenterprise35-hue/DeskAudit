@@ -79,6 +79,7 @@ class Config:
     llm: dict = field(default_factory=dict)
     dashboard_on_start: bool = True
     secret_gate: dict = field(default_factory=dict)
+    transfers: dict = field(default_factory=dict)
     project_root: Path = Path(".")
 
     @classmethod
@@ -114,6 +115,11 @@ class Config:
                 pass
         merged = {**DEFAULTS, **raw}
         root = cfg_path.resolve().parent if cfg_path.exists() else Path(".").resolve()
+        # Transfers: defaults from transfers.py, overlaid by config.yaml /
+        # config.local.yaml (nested merge above already handled the local file).
+        from .transfers import DEFAULT_TRANSFERS
+
+        transfers = {**DEFAULT_TRANSFERS, **(merged.get("transfers", {}) or {})}
         return cls(
             poll_interval_seconds=int(merged.get("poll_interval_seconds", 5)),
             idle_threshold_seconds=int(merged.get("idle_threshold_seconds", 300)),
@@ -149,6 +155,7 @@ class Config:
             llm=dict(merged.get("llm", {}) or {}),
             dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
             secret_gate={**DEFAULT_SECRET_GATE, **(merged.get("secret_gate", {}) or {})},
+            transfers=transfers,
             project_root=root,
         )
 

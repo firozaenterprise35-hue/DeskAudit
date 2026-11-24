@@ -178,6 +178,66 @@ never duplicates them — only NEW alerts are notified. Notification tries
 skips notification (alerts are still saved and shown on the dashboard).
 The dashboard has an Alerts card (`/api/alerts?date=...`) with severity badges.
 
+Data-transfer alerts (thresholds under `transfers:` in `config.yaml`):
+
+| Rule | Severity | When it fires |
+|---|---|---|
+| `usb_insert` | 🟡 warning | A USB drive was connected |
+| `usb_file_copy` | 🟡 warning | Files were copied onto a USB drive (count + total size) |
+| `cloud_upload` | 🟡 warning | Cloud-drive use over 15 min/day (Drive / Dropbox / WeTransfer …) |
+| `communication_use` | 🔵 info | Email / messaging channel use over 30 min/day |
+| `print_job` | 🔵 info | A document was printed (document name, printer) |
+| `sensitive_copy` | 🔴 critical | A file was copied OUT of a sensitive folder |
+| `large_transfer` | 🟡 warning | A single moved file over 100 MB |
+
+## Data Transfer Monitor — organisation edition (v11)
+
+For an office: every staff PC runs its own DeskAudit agent, and each PC
+has its own dashboard at `http://127.0.0.1:8000/` (per-PC — there is no
+central server). The agent watches for data LEAVING the PC and logs every
+event with file name, size, destination, time and app:
+
+```bat
+python main.py --transfers            # scan now + list today's transfers
+python main.py --transfers --date 2026-11-23
+```
+
+| Channel | What is detected |
+|---|---|
+| **USB / pen drive** | Drive inserted, files copied onto it (snapshot diff), drive removed |
+| **Cloud upload** | Sessions on drive.google.com, OneDrive, Dropbox, Box, MEGA, MediaFire, WeTransfer, SendSpace, file.io, pCloud, iCloud, … (a session under 60 s is not logged) |
+| **Email** | Gmail, Outlook, Yahoo mail, Proton, Zoho (channel used + duration) |
+| **Messaging** | WhatsApp Web, Telegram Web, Messenger, Teams, Slack, Discord, Skype |
+| **Printing** | Every print job from the Windows spooler: document name, pages, printer |
+| **Sensitive folders** | A file moved/copied OUT of a folder you mark in `transfers.sensitive_folders` — e.g. `%USERPROFILE%/Documents/CompanyData` |
+| **Large transfers** | Any single file move over `large_transfer_mb` (default 100 MB) |
+
+Everything is shown on the dashboard (🔒 ডেটা ট্রান্সফার section + two
+KPI cards + `/api/transfers?date=...`), in the daily report
+(`reports/YYYY-MM-DD-transfers.csv` and a Data transfers section in the
+`.md`), and in the daily Bengali summary (ডেটা ট্রান্সফার section).
+
+**What is NOT recorded:** the content of what anyone typed or sent.
+No keystroke logging, no message / email text, no passwords, no
+clipboard content. A 12-minute WhatsApp Web session is logged as
+"message channel used for 12 minutes" — never as what was written.
+DeskAudit is metadata-only, by design, from day one.
+
+**Making transfers harder, not just visible:** run
+`usb_write_protect.bat` (as administrator) to block WRITING to USB
+drives on that PC — reading still works, and the agent still logs every
+USB insert and copy attempt. Run `usb_write_allow.bat` to undo it.
+This does not block phones (MTP) or cloud uploads — those are caught
+and logged by the monitor instead. Staff should be told that office
+computers are monitored.
+
+Configure in `config.yaml` under `transfers:` (or from the dashboard
+Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
+(how often the agent scans, default 60 s), `sensitive_folders`,
+`cloud_min_seconds`, `communication_min_seconds`, `cloud_alert_minutes`,
+`communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
+`print_alert`, `sensitive_copy_alert`.
+
 ## Daily AI summary + weekly review — everything it covers
 
 Local, rule-based Bengali narrative — no LLM, no API key, no internet.
@@ -271,7 +331,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-10.5.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-11.0.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Stop DeskAudit), and can start the
@@ -299,17 +359,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v10.5-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v11.0-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.5.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-11.0.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-10.5.exe`).
+produces the same `installer\Output\DeskAudit-Setup-11.0.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

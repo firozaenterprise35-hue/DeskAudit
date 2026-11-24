@@ -43,6 +43,13 @@ def seed_db(tmp: Path) -> tuple[Database, str]:
     # File event in Office folder
     db.log_file_event("modified", "/home/user/Documents/Office/Q4 report.xlsx",
                       occurred_at=now, project="Office")
+    # Data transfers: USB copy + cloud session (for the transfers section)
+    db.log_transfer(date, "usb_copy", "E:", "report.xlsx", r"E:\report.xlsx",
+                    2 * 1024 * 1024, "E:",
+                    occurred_at=now.isoformat(timespec="seconds"))
+    db.log_transfer(date, "cloud", "drive.google.com",
+                    occurred_at=(now + timedelta(minutes=5)).isoformat(timespec="seconds"),
+                    details='{"seconds": 1200}')
     return db, date
 
 
@@ -80,6 +87,11 @@ def test_dashboard_summary():
     assert s["app_details"][0]["app"] == "WINWORD.EXE"
     assert s["app_details"][0]["project"] == "Office"
     assert s["recent_files"][0]["project"] == "Office"
+    # Data transfers (seeded): USB copy + cloud use
+    assert s["transfers"]["total"] == 2, s["transfers"]
+    assert s["kpis"]["transfers_total"] == 2
+    assert s["kpis"]["usb_copies"] == 1
+    assert s["transfers"]["cloud_domains"] == ["drive.google.com"]
     # Range: 3 days, today is the last row, previous days are 0
     rows = range_summary(db, 3, end=date, tagger=tagger)
     assert len(rows) == 3

@@ -111,6 +111,28 @@ secret_gate:
   click_window_seconds: 2   # the 4 clicks must happen within 2 seconds
   arm_seconds: 10           # then the code must be typed within 10 seconds
 
+# --- Data Transfer Monitor (organisation) -------------------------------
+# Watches for data LEAVING this PC: USB copies, cloud uploads, email /
+# messaging channels, printing, copies out of sensitive folders, large
+# moves. Metadata only — file name, size, destination, time, app. NEVER
+# the content of what was typed or sent (no keystroke logging, no message
+# or email text, no passwords, no clipboard). Per-PC: every staff PC runs
+# its own agent and its own dashboard at http://127.0.0.1:8000/ .
+transfers:
+  enabled: true
+  poll_seconds: 60        # how often the agent scans (USB / print / browser / files)
+  sensitive_folders: []   # folders to guard, e.g.:
+  #  - "%USERPROFILE%/Documents/CompanyData"
+  #  - "D:/Accounts"
+  cloud_min_seconds: 60         # a cloud session shorter than this is not logged
+  communication_min_seconds: 60 # same for email / messaging channels
+  cloud_alert_minutes: 15       # alert when cloud use passes this per day
+  communication_alert_minutes: 30
+  large_transfer_mb: 100        # a moved file at least this big alerts
+  usb_alert: true
+  print_alert: true
+  sensitive_copy_alert: true
+
 # --- Daily summary ----------------------------------------------------
 # Local rule-based Bengali narrative, no AI API key, no internet.
 # python main.py --ai-summary          (today)

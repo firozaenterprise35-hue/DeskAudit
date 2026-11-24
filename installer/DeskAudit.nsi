@@ -2,13 +2,13 @@
 ; Build the exe first (build_exe.bat on Windows, or the Wine build),
 ; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
 ;   makensis installer\DeskAudit.nsi
-; Output: installer\Output\DeskAudit-Setup-10.5.exe
+; Output: installer\Output\DeskAudit-Setup-11.0.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "10.5"
+!define APP_VERSION "11.0"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"

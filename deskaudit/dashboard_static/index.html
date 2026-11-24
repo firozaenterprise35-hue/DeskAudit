@@ -66,7 +66,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
   <button id="refreshBtn">Refresh</button>
   <label><input type="checkbox" id="autoRefresh"> Auto-refresh 30s</label>
   <span class="sub">Export:</span>
-  <a id="expMd" href="#">Markdown</a> · <a id="expCsv" href="#">Apps CSV</a> · <a id="expBrowser" href="#">Browser CSV</a> · <a id="expProjects" href="#">Projects CSV</a>
+  <a id="expMd" href="#">Markdown</a> · <a id="expCsv" href="#">Apps CSV</a> · <a id="expBrowser" href="#">Browser CSV</a> · <a id="expProjects" href="#">Projects CSV</a> · <a id="expTransfers" href="#">Transfers CSV</a>
   <span id="status"></span>
 </header>
 <main>
@@ -75,6 +75,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
   <section><h2>Today at a glance</h2><div id="glance" class="muted">Loading…</div></section>
 
   <section><h2>⚠️ Alerts <span id="alertCount" class="badge"></span></h2><div id="alertList" class="muted">Loading…</div><p class="muted">Rules live in <code>config.yaml</code> under <code>alerts:</code>. Run <code>python main.py --alerts</code> for the same check in the terminal.</p></section>
+
+  <section><h2>🔒 ডেটা ট্রান্সফার (Data Transfer) <span id="transferCount" class="badge"></span></h2><div id="transferSummary" class="muted">Loading…</div><table><thead><tr><th>When</th><th>Type</th><th>File / Channel</th><th>Destination</th><th>Size</th></tr></thead><tbody id="transferTable"></tbody></table><p class="muted">শুধু মেটাডেটা রেকর্ড হয় — ফাইলের নাম, সাইজ, কোথায় গেল, কখন, কোন অ্যাপ। মেসেজ / মেইলের ভেতরের লেখা, পাসওয়ার্ড বা টাইপ করা কিছুই পড়া হয় না। নিয়ম <code>config.yaml</code>-এর <code>transfers:</code> অংশে।</p></section>
 
   <section><h2>📝 ডেইলি সামারি (লোকাল, বাংলা)</h2><div id="narrative" class="muted">Loading…</div></section>
 
@@ -162,6 +164,19 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_alerts_enabled" type="checkbox"> Alerts enabled</label>
       <label><input id="set_alerts_notify" type="checkbox"> Windows notification</label>
     </div>
+    <h3>ডেটা ট্রান্সফার (Data Transfer — প্রতিষ্ঠানের জন্য)</h3>
+    <p class="muted">USB কপি, ক্লাউড আপলোড, ইমেইল / মেসেজ চ্যানেল, প্রিন্ট, গুরুত্বপূর্ণ ফোল্ডার থেকে কপি — শুধু মেটাডেটা (ফাইলের নাম, সাইজ, গন্তব্য, সময়)। গুরুত্বপূর্ণ ফোল্ডার একাধিক হলে কমা দিয়ে লিখুন।</p>
+    <div class="setgrid">
+      <label><input id="set_transfers_enabled" type="checkbox"> Data Transfer Monitor চালু</label>
+      <label><span>Scan interval (seconds, 10–600)</span><input id="set_transfers_poll_seconds" type="number" min="10" max="600"></label>
+      <label><span>গুরুত্বপূর্ণ ফোল্ডার (কমা দিয়ে আলাদা করুন)</span><input id="set_transfers_sensitive_folders" type="text" placeholder="%USERPROFILE%/Documents/CompanyData"></label>
+      <label><span>Cloud alert minutes per day (1–1440)</span><input id="set_transfers_cloud_alert_minutes" type="number" min="1" max="1440"></label>
+      <label><span>Email / message alert minutes (1–1440)</span><input id="set_transfers_communication_alert_minutes" type="number" min="1" max="1440"></label>
+      <label><span>Large transfer MB (1–100000)</span><input id="set_transfers_large_transfer_mb" type="number" min="1" max="100000"></label>
+      <label><input id="set_transfers_usb_alert" type="checkbox"> USB alert</label>
+      <label><input id="set_transfers_print_alert" type="checkbox"> Print alert</label>
+      <label><input id="set_transfers_sensitive_copy_alert" type="checkbox"> Sensitive-folder copy alert</label>
+    </div>
     <h3>ব্যাকআপ (Backup)</h3>
     <div class="setgrid">
       <label><span>Keep days (1–365)</span><input id="set_backup_keep_days" type="number" min="1" max="365"></label>
@@ -185,6 +200,7 @@ async function load(){
   $('dateInput').value=d; $('footDate').textContent=d;
   $('expMd').href=`/api/export?date=${d}&format=md`; $('expCsv').href=`/api/export?date=${d}&format=csv`;
   $('expBrowser').href=`/api/export?date=${d}&format=browser`; $('expProjects').href=`/api/export?date=${d}&format=projects`;
+  $('expTransfers').href=`/api/export?date=${d}&format=transfers`;
   const [s,r,a,n,w]=await Promise.all([
     fetch(`/api/summary?date=${d}`).then(x=>x.json()).catch(()=>null),
     fetch(`/api/range?days=${state.days}&end=${d}`).then(x=>x.json()).catch(()=>null),
@@ -193,12 +209,22 @@ async function load(){
     fetch(`/api/weekly?end=${d}&days=7`).then(x=>x.json()).catch(()=>null),
   ]);
   if(!s){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি — এজেন্ট চালু আছে কি না দেখুন।'); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি। এজেন্ট (DeskAudit) চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
-  state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); setStatus('Updated '+new Date().toLocaleTimeString());
+  state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); renderTransfers(s.transfers); setStatus('Updated '+new Date().toLocaleTimeString());
 }
 function renderAlerts(a){
   const list=(a&&a.alerts)||[];
   $('alertCount').textContent=list.length?list.length+'টি':'কিছু নেই';
   $('alertList').innerHTML=list.length?list.map(x=>`<div style="margin:6px 0"><span class="badge ${x.severity==='critical'?'red':x.severity==='warning'?'amber':'green'}">${esc(x.severity)}</span> <b>${esc(x.title)}</b><div class="muted">${esc(x.message)}</div></div>`).join(''):'<p class="muted">আজ কোনো অ্যালার্ট নেই।</p>';
+}
+function renderTransfers(t){
+  const total=(t&&t.total)||0;
+  $('transferCount').textContent=total?total+'টি':'কিছু নেই';
+  const counts=(t&&t.counts)||{};
+  const labels={'usb_copy':'USB-তে কপি','usb_insert':'USB লাগানো','usb_remove':'USB খোলা','cloud':'ক্লাউড','email':'ইমেইল','message':'মেসেজ','print':'প্রিন্ট','sensitive_copy':'গুরুত্বপূর্ণ ফোল্ডার থেকে বাইরে','large_transfer':'বড় ট্রান্সফার'};
+  const parts=Object.keys(counts).filter(k=>counts[k].count).map(k=>`${labels[k]||k} ${counts[k].count}টি`);
+  $('transferSummary').innerHTML=total?`<div>${parts.join(' · ')}</div>`+(t.usb_drives&&t.usb_drives.length?`<div class="muted">USB ড্রাইভ: ${esc(t.usb_drives.join(', '))}</div>`:''):'<p class="muted">আজ কোনো ডেটা ট্রান্সফার ধরা পড়েনি।</p>';
+  const rows=(t&&t.rows)||[];
+  $('transferTable').innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.at)}</td><td>${esc(labels[x.type]||x.type)}</td><td>${esc(x.file||x.channel)}</td><td>${esc(x.destination||x.channel)}</td><td>${x.size_bytes?esc((x.size_bytes/1024/1024>=1?(x.size_bytes/1024/1024).toFixed(1)+' MB':(x.size_bytes/1024).toFixed(1)+' KB')):'—'}</td></tr>`).join(''):'<tr><td colspan="5" class="muted">No transfers recorded.</td></tr>';
 }
 function renderNarrative(n){
   if(!n){$('narrative').innerHTML='<p class="muted">সামারি পাওয়া যায়নি।</p>';return}
@@ -223,6 +249,8 @@ function render(){
     ['Searches',k.searches,'distinct top searches shown below'],
     ['Downloads',k.downloads,'files downloaded'],
     ['Untagged',fmt(k.untagged_seconds),'needs a project rule'],
+    ['Data transfers',k.transfers_total,'USB / cloud / email / print'],
+    ['USB copies',k.usb_copies,'files copied onto USB'],
   ];
   $('kpis').innerHTML=cards.map(c=>`<div class="kpi"><div class="label">${c[0]}</div><div class="value">${esc(c[1])}</div><div class="note">${esc(c[2])}</div></div>`).join('');
   $('glance').innerHTML=`On <b>${esc(s.date)}</b> you were active <b>${fmt(s.active_seconds)}</b> and idle <b>${fmt(s.idle_seconds)}</b> across <b>${s.apps_used}</b> apps. Browser: <b>${fmt(s.browser.active_seconds)}</b> (${fmt(s.browser.productive_seconds)} productive, ${fmt(s.browser.distracting_seconds)} distracting). ${s.projects.length} project(s) worked on.`;
@@ -312,6 +340,17 @@ async function loadSettings(){
   setNum('set_backup_keep_days',s.backup.backup_keep_days);
   setNum('set_backup_keep_count',s.backup.backup_keep_count);
   setChk('set_backup_on_start',s.backup.backup_on_start);
+  if(s.transfers){
+    setChk('set_transfers_enabled',s.transfers.enabled);
+    setNum('set_transfers_poll_seconds',s.transfers.poll_seconds);
+    $('set_transfers_sensitive_folders').value=(s.transfers.sensitive_folders||[]).join(', ');
+    setNum('set_transfers_cloud_alert_minutes',s.transfers.cloud_alert_minutes);
+    setNum('set_transfers_communication_alert_minutes',s.transfers.communication_alert_minutes);
+    setNum('set_transfers_large_transfer_mb',s.transfers.large_transfer_mb);
+    setChk('set_transfers_usb_alert',s.transfers.usb_alert);
+    setChk('set_transfers_print_alert',s.transfers.print_alert);
+    setChk('set_transfers_sensitive_copy_alert',s.transfers.sensitive_copy_alert);
+  }
 }
 async function saveSettings(){
   const num=id=>{const v=parseInt($(id).value,10); return Number.isFinite(v)?v:null};
@@ -327,6 +366,10 @@ async function saveSettings(){
   for(const [k,id] of Object.entries(alertInts)){const v=num(id); if(v!==null) updates.alerts[k]=v}
   const backupInts={backup_keep_days:'set_backup_keep_days',backup_keep_count:'set_backup_keep_count'};
   for(const [k,id] of Object.entries(backupInts)){const v=num(id); if(v!==null) updates.backup[k]=v}
+  updates.transfers={enabled:$('set_transfers_enabled').checked,usb_alert:$('set_transfers_usb_alert').checked,print_alert:$('set_transfers_print_alert').checked,sensitive_copy_alert:$('set_transfers_sensitive_copy_alert').checked};
+  const trInts={poll_seconds:'set_transfers_poll_seconds',cloud_alert_minutes:'set_transfers_cloud_alert_minutes',communication_alert_minutes:'set_transfers_communication_alert_minutes',large_transfer_mb:'set_transfers_large_transfer_mb'};
+  for(const [k,id] of Object.entries(trInts)){const v=num(id); if(v!==null) updates.transfers[k]=v}
+  updates.transfers.sensitive_folders=$('set_transfers_sensitive_folders').value;
   updates.agent.browser_enabled=$('set_browser_enabled').checked;
   updates.agent.track_downloads=$('set_track_downloads').checked;
   updates.agent.track_searches=$('set_track_searches').checked;

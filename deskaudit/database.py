@@ -128,6 +128,27 @@ CREATE TABLE IF NOT EXISTS alerts (
     UNIQUE(date, alert_type, title)
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_date ON alerts(date);
+-- Data transfers (see transfers.py). Metadata only: file name, size,
+-- destination (drive letter / domain / printer), time and app. Never
+-- the content of what was typed or sent.
+CREATE TABLE IF NOT EXISTS transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    transfer_type TEXT NOT NULL,   -- usb_insert | usb_remove | usb_copy |
+                                   -- cloud | email | message | print |
+                                   -- sensitive_copy | large_transfer
+    channel TEXT DEFAULT '',       -- drive letter, domain, printer, folder
+    file_name TEXT DEFAULT '',
+    file_path TEXT DEFAULT '',
+    size_bytes INTEGER,
+    destination TEXT DEFAULT '',
+    app TEXT DEFAULT '',
+    occurred_at TEXT NOT NULL,
+    details TEXT DEFAULT '',
+    UNIQUE(date, transfer_type, channel, file_name, occurred_at)
+);
+CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers(date);
+CREATE INDEX IF NOT EXISTS idx_transfers_type ON transfers(transfer_type);
 -- Project indexes are created in _migrate_project_columns(), after the
 -- project/tags columns exist (fresh DBs get them there too).
 """
@@ -691,6 +712,62 @@ class Database:
     def mark_alert_read(self, alert_id: int) -> None:
         self.conn.execute("UPDATE alerts SET is_read = 1 WHERE id = ?", (alert_id,))
         self.conn.commit()
+
+    # -- data transfers ---------------------------------------------------
+    def log_transfer(self, date: str, transfer_type: str, channel: str = "",
+                     file_name: str = "", file_path: str = "",
+                     size_bytes: int | None = None, destination: str = "",
+                     app: str = "", occurred_at: str | None = None,
+                     details: str = "") -> bool:
+        """Insert a transfer row; False when it already exists (deduped)."""
+        from datetime import datetime as _dt
+
+        when = occurred_at or _dt.now().astimezone().isoformat(timespec="seconds")
+        try:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO transfers
+                   (date, transfer_type, channel, file_name, file_path,
+                    size_bytes, destination, app, occurred_at, details)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (date, transfer_type, channel, file_name, file_path,
+                 size_bytes, destination, app, when, details),
+            )
+            self.conn.commit()
+            return self.conn.execute("SELECT changes()").fetchone()[0] > 0
+        except Exception:
+            return False
+
+    def has_transfer(self, date: str, transfer_type: str, file_name: str) -> bool:
+        row = self.conn.execute(
+            """SELECT 1 FROM transfers WHERE date = ? AND transfer_type = ?
+               AND file_name = ? LIMIT 1""",
+            (date, transfer_type, file_name)).fetchone()
+        return row is not None
+
+    def transfers_for_date(self, date: str, limit: int = 100) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM transfers WHERE date = ?
+               ORDER BY occurred_at DESC LIMIT ?""",
+            (date, limit)).fetchall()
+
+    def transfer_counts(self, date: str) -> dict[str, dict]:
+        """{type: {"count": n, "bytes": total_size}} for one day."""
+        rows = self.conn.execute(
+            """SELECT transfer_type, COUNT(*) AS n,
+                      COALESCE(SUM(size_bytes), 0) AS b
+               FROM transfers WHERE date = ? GROUP BY transfer_type""",
+            (date,)).fetchall()
+        return {r["transfer_type"]: {"count": int(r["n"] or 0),
+                                     "bytes": int(r["b"] or 0)} for r in rows}
+
+    def transfer_count_between(self, start: str, end: str) -> dict[str, dict]:
+        rows = self.conn.execute(
+            """SELECT transfer_type, COUNT(*) AS n,
+                      COALESCE(SUM(size_bytes), 0) AS b
+               FROM transfers WHERE date BETWEEN ? AND ? GROUP BY transfer_type""",
+            (start, end)).fetchall()
+        return {r["transfer_type"]: {"count": int(r["n"] or 0),
+                                     "bytes": int(r["b"] or 0)} for r in rows}
 
     def close(self) -> None:
         self.conn.close()
