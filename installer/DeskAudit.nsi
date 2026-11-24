@@ -1,0 +1,83 @@
+; DeskAudit installer — NSIS script (alternative to installer/DeskAudit.iss).
+; Build the exe first (build_exe.bat on Windows, or the Wine build),
+; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
+;   makensis installer\DeskAudit.nsi
+; Output: installer\Output\DeskAudit-Setup-10.0.exe
+; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
+; agent can write its data/, reports/ and backups/ folders next to the exe.
+; Paths are relative to this script file, so it compiles from any folder.
+
+!define APP_NAME "DeskAudit"
+!define APP_VERSION "10.0"
+!define APP_PUBLISHER "Firoza"
+!define APP_EXE "DeskAudit.exe"
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
+
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+
+Name "${APP_NAME} ${APP_VERSION}"
+OutFile "${__FILEDIR__}/Output/DeskAudit-Setup-${APP_VERSION}.exe"
+InstallDir "$LOCALAPPDATA\${APP_NAME}"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+
+VIProductVersion "${APP_VERSION}.0.0"
+VIAddVersionKey "ProductName" "${APP_NAME}"
+VIAddVersionKey "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey "CompanyName" "${APP_PUBLISHER}"
+VIAddVersionKey "FileDescription" "${APP_NAME} installer"
+VIAddVersionKey "LegalCopyright" "${APP_PUBLISHER}"
+VIAddVersionKey "FileVersion" "${APP_VERSION}.0.0"
+
+!define MUI_ABORTWARNING
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
+!insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_PARAMETERS "--once"
+!define MUI_FINISHPAGE_RUN_TEXT "Run a quick smoke test now"
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+
+Section "${APP_NAME} (required)" SecMain
+  SectionIn RO
+  SetOutPath "$INSTDIR"
+  File /r "${__FILEDIR__}/../dist/${APP_NAME}/*.*"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME} ${APP_VERSION}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
+  CreateDirectory "$SMPROGRAMS\${APP_NAME}"
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Dashboard.lnk" "$INSTDIR\${APP_EXE}" "--dashboard" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
+SectionEnd
+
+Section "Desktop icon" SecDesktop
+  CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+SectionEnd
+
+Section "Start DeskAudit when Windows starts" SecStartup
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_NAME}" '"$INSTDIR\${APP_EXE}"'
+SectionEnd
+
+Section "Uninstall"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR"
+  Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Dashboard.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk"
+  RMDir "$SMPROGRAMS\${APP_NAME}"
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_NAME}"
+  DeleteRegKey HKCU "${UNINSTALL_KEY}"
+SectionEnd

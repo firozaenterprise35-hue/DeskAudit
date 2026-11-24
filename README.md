@@ -269,30 +269,33 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-10.0.exe` from the
-[GitHub Release v10.0](https://github.com/firozaenterprise35-hue/DeskAudit/releases/tag/v10.0)
-and double-click it. It installs per-user to `%LOCALAPPDATA%\DeskAudit`
-(no admin needed), adds Start Menu shortcuts (DeskAudit, DeskAudit
-Dashboard), and can start the agent with Windows. Uninstall from
-Windows Settings like any other app.
+**Easiest:** download `DeskAudit-Setup-10.0.exe` (Google Drive link from
+Muse) and double-click it. It installs per-user to
+`%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
+(DeskAudit, DeskAudit Dashboard), and can start the agent with Windows.
+Uninstall from Windows Settings like any other app.
 
-**Portable:** unzip `DeskAudit-v10.zip` and double-click `run.bat`
-(Python still needed) — or run `dist\DeskAudit\DeskAudit.exe` from a
-built copy.
+**Portable (no install):** unzip the `DeskAudit-v10.1-Windows-exe.zip`
+and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
 installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.0.exe (needs Inno Setup 6)
 ```
-Every push to `main` also builds both files automatically with
-GitHub Actions (`.github/workflows/build-windows.yml`) and attaches
-them to Release v10.0.
+On Linux the same exe is built with Wine (Windows Python + PyInstaller)
+and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
+produces the same `installer\Output\DeskAudit-Setup-10.0.exe`).
+A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
+builds both files on every push to `main` and attaches them to
+Release v10.0 — it needs the workflow file added to the repo first
+(the Muse GitHub App cannot create `.github/workflows/` files via API).
 
 The exe finds its own `config.yaml` next to itself, so shortcuts and
 the 9pm scheduled task work from any folder. `config.local.yaml`
 (same folder, git-ignored) overrides `config.yaml` — put the Gemini
-API key there, never in `config.yaml`.
+API key there, never in `config.yaml`. The Bengali daily summary also
+prints correctly in a Windows console (the exe forces UTF-8 output).
 
 ## Version history (git) & rollback
 

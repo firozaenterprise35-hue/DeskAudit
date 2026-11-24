@@ -4,6 +4,9 @@ __pycache__/
 data/
 reports/
 backups/
+dist/
+build/
+installer/Output/
 *.db
 .env
 config.local.yaml

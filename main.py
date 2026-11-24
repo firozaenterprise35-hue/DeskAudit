@@ -205,7 +205,20 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     return 0
 
 
+def _fix_console_encoding() -> None:
+    """Windows consoles default to cp1252/cp437, which cannot print the
+    Bengali daily summary — printing it then crashes with
+    UnicodeEncodeError. Switch stdout/stderr to UTF-8 (replacing anything
+    still unencodable) so --ai-summary works in any console."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _fix_console_encoding()
     parser = argparse.ArgumentParser(description="DeskAudit — desktop audit agent")
     parser.add_argument("--report", action="store_true", help="Generate a daily report")
     parser.add_argument("--date", default=None, help="Report date, YYYY-MM-DD")

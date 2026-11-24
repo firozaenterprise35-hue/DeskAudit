@@ -65,3 +65,17 @@ coll = COLLECT(
     upx_exclude=[],
     name="DeskAudit",
 )
+
+# PyInstaller 6 onedir puts all datas under _internal/, but DeskAudit
+# expects config.yaml / projects.yaml next to the exe (editable by the
+# user, and data/reports/backups are created next to it). Copy them up
+# one level so the shipped folder matches the documented layout.
+import os as _os
+import shutil as _shutil
+
+_exe_dir = _os.path.join(DISTPATH, "DeskAudit")
+for _name in ("config.yaml", "projects.yaml"):
+    _src = _os.path.join(_exe_dir, "_internal", _name)
+    _dst = _os.path.join(_exe_dir, _name)
+    if _os.path.exists(_src):
+        _shutil.copyfile(_src, _dst)
