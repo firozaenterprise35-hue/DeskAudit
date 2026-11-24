@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+reports/
+backups/
+*.db
+.env
+config.local.yaml
+PAUSE

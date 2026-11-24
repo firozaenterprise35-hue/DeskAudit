@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskAudit Dashboard</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--blue:#2563eb;--green:#16a34a;--amber:#d97706;--red:#dc2626;--purple:#9333ea;--teal:#0891b2}
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+header{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--border);padding:12px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;z-index:10}
+header h1{font-size:20px;margin:0 12px 0 0} header .sub{color:var(--muted);font-size:13px}
+button,input,select{font:inherit;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:#fff}
+button{cursor:pointer} button.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+main{max-width:1180px;margin:0 auto;padding:18px}
+section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px} h3{font-size:14px;margin:0 0 8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+.kpi .label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi .value{font-size:24px;font-weight:700;margin-top:4px}
+.kpi .note{font-size:12px;color:var(--muted);margin-top:2px}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.bar-row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px}
+.bar-row .name{width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-row .track{flex:1;background:#eef2f7;border-radius:6px;height:18px;overflow:hidden}
+.bar-row .fill{height:100%;background:var(--blue);border-radius:6px}
+.bar-row .fill.green{background:var(--green)} .bar-row .fill.amber{background:var(--amber)} .bar-row .fill.purple{background:var(--purple)} .bar-row .fill.teal{background:var(--teal)} .bar-row .fill.red{background:var(--red)}
+.bar-row .val{width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.hourly{display:flex;align-items:flex-end;gap:3px;height:130px;padding-top:8px}
+.hourly .col{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.hourly .bar{width:100%;background:var(--blue);border-radius:3px 3px 0 0;min-height:2px}
+.hourly .bar.browser{background:var(--teal)}
+.hourly .h{font-size:10px;color:var(--muted)}
+.progress{height:10px;background:#eef2f7;border-radius:6px;overflow:hidden}
+.progress>div{height:100%;background:var(--green)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.muted{color:var(--muted);font-size:13px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2f7;font-size:12px}
+.badge.green{background:#dcfce7;color:#166534} .badge.amber{background:#fef3c7;color:#92400e} .badge.red{background:#fee2e2;color:#991b1b}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.donut-wrap{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.legend{font-size:13px;line-height:1.8}
+footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
+#status{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>DeskAudit</h1><span class="sub">Local dashboard · data never leaves this computer</span>
+  <button id="prevBtn" title="Previous day">← Prev</button>
+  <input type="date" id="dateInput">
+  <button id="nextBtn" title="Next day">Next →</button>
+  <button id="todayBtn">Today</button>
+  <span class="sub">Trend:</span>
+  <button class="rangeBtn active" data-days="7">7d</button>
+  <button class="rangeBtn" data-days="14">14d</button>
+  <button class="rangeBtn" data-days="30">30d</button>
+  <button id="refreshBtn">Refresh</button>
+  <label><input type="checkbox" id="autoRefresh"> Auto-refresh 30s</label>
+  <span class="sub">Export:</span>
+  <a id="expMd" href="#">Markdown</a> · <a id="expCsv" href="#">Apps CSV</a> · <a id="expBrowser" href="#">Browser CSV</a> · <a id="expProjects" href="#">Projects CSV</a>
+  <span id="status"></span>
+</header>
+<main>
+  <div class="grid" id="kpis"></div>
+
+  <section><h2>Today at a glance</h2><div id="glance" class="muted">Loading…</div></section>
+
+  <section><h2>⚠️ Alerts <span id="alertCount" class="badge"></span></h2><div id="alertList" class="muted">Loading…</div><p class="muted">Rules live in <code>config.yaml</code> under <code>alerts:</code>. Run <code>python main.py --alerts</code> for the same check in the terminal.</p></section>
+
+  <section><h2>📝 ডেইলি সামারি (লোকাল, বাংলা)</h2><div id="narrative" class="muted">Loading…</div></section>
+
+  <section><h2>📅 সাপ্তাহিক রিভিউ (শেষ ৭ দিন)</h2><div id="weekly" class="muted">Loading…</div></section>
+
+  <div class="charts">
+    <section><h2>Hourly activity — active minutes per hour</h2><div class="hourly" id="hourly"></div><p class="muted">Hover a bar to see browser minutes for that hour. A session counts toward the hour it started in. Browser time is part of app time, not added on top.</p></section>
+    <section><h2>Productive vs distracting (browser)</h2><div class="donut-wrap"><div id="donut"></div><div class="legend" id="donutLegend"></div></div></section>
+    <section><h2>Projects — time &amp; daily goal</h2><div id="projectBars"></div></section>
+    <section><h2>Top apps</h2><div id="appBars"></div></section>
+    <section><h2>Top domains</h2><div id="domainBars"></div></section>
+    <section><h2>Browser categories</h2><div id="categoryBars"></div></section>
+    <section><h2>File events by type</h2><div id="fileBars"></div></section>
+    <section><h2>Trend — active minutes per day</h2><div id="trendBars"></div><p class="muted" id="trendNote"></p></section>
+  </div>
+
+  <section>
+    <h2>Projects</h2>
+    <div class="filters"><label>Filter: <select id="projectFilter"><option value="">All projects</option></select></label>
+    <input id="projectSearch" placeholder="Search projects…"></div>
+    <table><thead><tr><th>Project</th><th>Active</th><th>App</th><th>Browser</th><th>Files</th><th>Visits</th><th>Goal</th><th>Progress</th></tr></thead><tbody id="projectTable"></tbody></table>
+  </section>
+
+  <section>
+    <h2>App sessions</h2>
+    <div class="filters"><input id="appSearch" placeholder="Search app or title…"></div>
+    <table><thead><tr><th>App</th><th>Window title</th><th>Project</th><th>Active</th><th>Sessions</th></tr></thead><tbody id="appTable"></tbody></table>
+  </section>
+
+  <section>
+    <h2>Browser</h2>
+    <h3>Top domains</h3>
+    <table><thead><tr><th>Domain</th><th>Category</th><th>Active / Visits</th><th>Sessions</th></tr></thead><tbody id="domainTable"></tbody></table>
+    <h3>Top searches</h3><div id="searchList"></div>
+    <h3>Downloads</h3><div id="downloadList"></div>
+  </section>
+
+  <section>
+    <h2>Recent file events</h2>
+    <table><thead><tr><th>When</th><th>Event</th><th>Path</th><th>Project</th></tr></thead><tbody id="fileTable"></tbody></table>
+  </section>
+
+  <section>
+    <h2>Untagged — what still needs a project</h2>
+    <p class="muted">Add a rule in <code>projects.yaml</code>, then run <code>python main.py --retag</code>. Or run <code>python main.py --suggest-projects</code> for copy-paste rules.</p>
+    <div id="untaggedList"></div>
+  </section>
+</main>
+<footer>DeskAudit dashboard · served from 127.0.0.1 only · <span id="footDate"></span></footer>
+<script>
+const $=id=>document.getElementById(id);
+let state={date:new Date().toISOString().slice(0,10),days:7,summary:null,range:[]};
+function fmt(s){s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);if(h)return h+'h '+m+'m';if(m)return m+'m';return s+'s'}
+function fmtMin(m){return fmt((m||0)*60)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function barRow(name,val,max,cls,display){const pct=max?Math.round(100*Number(val)/Number(max)):0;return `<div class="bar-row"><span class="name" title="${esc(name)}">${esc(name)}</span><span class="track"><span class="fill ${cls||''}" style="display:block;width:${pct}%"></span></span><span class="val">${esc(display!==undefined?display:val)}</span></div>`}
+function setStatus(t){$('status').textContent=t}
+async function load(){
+  const d=state.date; setStatus('Loading '+d+'…');
+  $('dateInput').value=d; $('footDate').textContent=d;
+  $('expMd').href=`/api/export?date=${d}&format=md`; $('expCsv').href=`/api/export?date=${d}&format=csv`;
+  $('expBrowser').href=`/api/export?date=${d}&format=browser`; $('expProjects').href=`/api/export?date=${d}&format=projects`;
+  const [s,r,a,n,w]=await Promise.all([
+    fetch(`/api/summary?date=${d}`).then(x=>x.json()),
+    fetch(`/api/range?days=${state.days}&end=${d}`).then(x=>x.json()),
+    fetch(`/api/alerts?date=${d}`).then(x=>x.json()).catch(()=>({alerts:[]})),
+    fetch(`/api/narrative?date=${d}`).then(x=>x.json()).catch(()=>null),
+    fetch(`/api/weekly?end=${d}&days=7`).then(x=>x.json()).catch(()=>null),
+  ]);
+  state.summary=s; state.range=r.rows||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); setStatus('Updated '+new Date().toLocaleTimeString());
+}
+function renderAlerts(a){
+  const list=(a&&a.alerts)||[];
+  $('alertCount').textContent=list.length?list.length+'টি':'কিছু নেই';
+  $('alertList').innerHTML=list.length?list.map(x=>`<div style="margin:6px 0"><span class="badge ${x.severity==='critical'?'red':x.severity==='warning'?'amber':'green'}">${esc(x.severity)}</span> <b>${esc(x.title)}</b><div class="muted">${esc(x.message)}</div></div>`).join(''):'<p class="muted">আজ কোনো অ্যালার্ট নেই।</p>';
+}
+function renderNarrative(n){
+  if(!n){$('narrative').innerHTML='<p class="muted">সামারি পাওয়া যায়নি।</p>';return}
+  $('narrative').innerHTML=`<p><b>${esc(n.headline)}</b></p>`+n.sections.map(s=>`<h3>${esc(s.title)}</h3><p>${esc(s.text)}</p>`).join('');
+}
+function renderWeekly(w){
+  if(!w){$('weekly').innerHTML='<p class="muted">সাপ্তাহিক রিভিউ পাওয়া যায়নি।</p>';return}
+  $('weekly').innerHTML=`<p><b>${esc(w.headline)}</b></p>`+w.sections.map(s=>`<h3>${esc(s.title)}</h3><p>${esc(s.text)}</p>`).join('');
+}
+}
+function render(){
+  const s=state.summary; if(!s) return; const k=s.kpis||{};
+  const cards=[
+    ['Active',fmt(k.active_seconds),k.active_percent+'% of tracked time'],
+    ['Idle',fmt(k.idle_seconds),'no input'],
+    ['Apps used',k.apps_used,'distinct apps'],
+    ['Browser',fmt(k.browser_seconds),k.visits+' visits'],
+    ['Productive (browser)',fmt(k.productive_seconds),k.productive_percent+'% of browser time'],
+    ['Distracting (browser)',fmt(k.distracting_seconds),''],
+    ['Projects worked',k.projects_worked,k.goals_met+' / '+k.goals_total+' goals met'],
+    ['File events',k.file_events,'created / modified / deleted / moved'],
+    ['Visits',k.visits,'browser visits'],
+    ['Searches',k.searches,'distinct top searches shown below'],
+    ['Downloads',k.downloads,'files downloaded'],
+    ['Untagged',fmt(k.untagged_seconds),'needs a project rule'],
+  ];
+  $('kpis').innerHTML=cards.map(c=>`<div class="kpi"><div class="label">${c[0]}</div><div class="value">${esc(c[1])}</div><div class="note">${esc(c[2])}</div></div>`).join('');
+  $('glance').innerHTML=`On <b>${esc(s.date)}</b> you were active <b>${fmt(s.active_seconds)}</b> and idle <b>${fmt(s.idle_seconds)}</b> across <b>${s.apps_used}</b> apps. Browser: <b>${fmt(s.browser.active_seconds)}</b> (${fmt(s.browser.productive_seconds)} productive, ${fmt(s.browser.distracting_seconds)} distracting). ${s.projects.length} project(s) worked on.`;
+  // Hourly
+  const maxH=Math.max(1,...s.hourly.map(h=>h.active_minutes));
+  $('hourly').innerHTML=s.hourly.map(h=>`<div class="col"><div class="bar" style="height:${Math.max(2,Math.round(100*h.active_minutes/maxH))}%" title="${h.hour}:00 — ${h.active_minutes} active min, ${h.browser_minutes} browser min"></div><span class="h">${h.hour}</span></div>`).join('');
+  // Donut productive vs distracting
+  const p=s.browser.productive_seconds||0, d=s.browser.distracting_seconds||0, tot=p+d||1;
+  const pp=Math.round(100*p/tot);
+  $('donut').innerHTML=`<svg width="140" height="140" viewBox="0 0 42 42"><circle cx="21" cy="21" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="6"/><circle cx="21" cy="21" r="15.9" fill="none" stroke="#16a34a" stroke-width="6" stroke-dasharray="${pp} ${100-pp}" stroke-dashoffset="25" transform="rotate(0 21 21)"/><text x="21" y="22" text-anchor="middle" font-size="7" font-weight="bold">${pp}%</text><text x="21" y="28" text-anchor="middle" font-size="4" fill="#6b7280">productive</text></svg>`;
+  $('donutLegend').innerHTML=`<div><span class="badge green">Productive</span> ${fmt(p)}</div><div><span class="badge amber">Distracting</span> ${fmt(d)}</div><div class="muted">Browser time only. App time is counted separately above.</div>`;
+  // Projects
+  const maxP=Math.max(1,...s.projects.map(x=>x.active_seconds));
+  $('projectBars').innerHTML=s.projects.length?s.projects.map(x=>{const goal=x.goal_minutes?` — goal ${fmt(x.goal_minutes*60)} (${x.goal_percent}%)${x.goal_met?' ✓':''}`:'';return `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span><b>${esc(x.project)}</b>${esc(goal)}</span><span>${fmt(x.active_seconds)}</span></div><div class="progress"><div style="width:${Math.min(100,x.goal_minutes?x.goal_percent:Math.round(100*x.active_seconds/maxP))}%"></div></div><div class="muted">app ${fmt(x.app_seconds)} · browser ${fmt(x.browser_seconds)} · ${x.file_events} files · ${x.visits} visits</div></div>`}).join(''):'<p class="muted">No tagged activity yet.</p>';
+  const pf=$('projectFilter'); const cur=pf.value;
+  pf.innerHTML='<option value="">All projects</option>'+s.projects.map(x=>`<option>${esc(x.project)}</option>`).join('');
+  if([...pf.options].some(o=>o.value===cur)) pf.value=cur;
+  renderProjectTable(); renderAppTable();
+  // Top apps / domains / categories / files
+  const maxA=Math.max(1,...s.app_details.map(x=>x.active_seconds));
+  $('appBars').innerHTML=s.app_details.length?s.app_details.slice(0,10).map(x=>barRow(x.app+' — '+x.title, x.active_seconds, maxA, 'purple', fmt(x.active_seconds))).join(''):'<p class="muted">No app sessions.</p>';
+  const maxD=Math.max(1,...s.browser.top_domains.map(x=>x.active_seconds||x.sessions));
+  $('domainBars').innerHTML=s.browser.top_domains.length?s.browser.top_domains.slice(0,10).map(x=>{const v=x.active_seconds||0;const pct=Math.round(100*(v||x.sessions)/maxD);return `<div class="bar-row"><span class="name">${esc(x.domain)}</span><span class="track"><span class="fill teal" style="display:block;width:${pct}%"></span></span><span class="val">${v?fmt(v):x.sessions+' visits'}</span></div>`}).join(''):'<p class="muted">No browser domains.</p>';
+  const maxC=Math.max(1,...s.categories.map(x=>x.active_seconds||x.sessions));
+  $('categoryBars').innerHTML=s.categories.length?s.categories.map(x=>{const v=x.active_seconds||0;const pct=Math.round(100*(v||x.sessions)/maxC);return `<div class="bar-row"><span class="name">${esc(x.category)}</span><span class="track"><span class="fill" style="display:block;width:${pct}%"></span></span><span class="val">${v?fmt(v):x.sessions+' visits'}</span></div>`}).join(''):'<p class="muted">No categories.</p>';
+  const maxF=Math.max(1,...s.file_types.map(x=>x.count));
+  $('fileBars').innerHTML=s.file_types.length?s.file_types.map(x=>barRow(x.event, x.count, maxF, 'amber', String(x.count))).join(''):'<p class="muted">No file events.</p>';
+  // Trend
+  const maxT=Math.max(1,...state.range.map(x=>x.active_seconds));
+  $('trendBars').innerHTML=state.range.map(x=>{const pct=Math.round(100*x.active_seconds/maxT);return `<div class="bar-row"><span class="name">${esc(x.date)}</span><span class="track"><span class="fill green" style="display:block;width:${pct}%"></span></span><span class="val">${fmt(x.active_seconds)}</span></div>`}).join('');
+  $('trendNote').textContent=`Last ${state.days} days ending ${state.date}. Top project per day is shown in the table below via the API.`;
+  // Domain table
+  $('domainTable').innerHTML=s.browser.top_domains.map(x=>`<tr><td>${esc(x.domain)}</td><td>${esc(x.category)}</td><td>${x.active_seconds?fmt(x.active_seconds):x.sessions+' visits'}</td><td>${x.sessions}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No browser domains.</td></tr>';
+  $('searchList').innerHTML=s.browser.searches.length?s.browser.searches.map(x=>`<div>“${esc(x.query)}” <span class="muted">×${x.count}</span></div>`).join(''):'<p class="muted">No searches.</p>';
+  $('downloadList').innerHTML=s.browser.downloads.length?s.browser.downloads.map(x=>`<div>${esc(x.browser)}: ${esc(x.file)} <span class="badge">${esc(x.state)}</span></div>`).join(''):'<p class="muted">No downloads.</p>';
+  $('fileTable').innerHTML=s.recent_files.length?s.recent_files.map(x=>`<tr><td>${esc(x.at)}</td><td>${esc(x.event)}</td><td>${esc(x.path)}${x.dest?' → '+esc(x.dest):''}</td><td>${esc(x.project)}</td></tr>`).join(''):'<tr><td colspan="4" class="muted">No file events.</td></tr>';
+  const u=s.untagged||{};
+  $('untaggedList').innerHTML=[...(u.apps||[]).map(x=>`<div>App: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.domains||[]).map(x=>`<div>Domain: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.titles||[]).map(x=>`<div>Title: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`)].join('')||'<p class="muted">Nothing untagged. Nice.</p>';
+}
+function renderProjectTable(){
+  const s=state.summary; if(!s) return;
+  const f=($('projectFilter').value||'').toLowerCase(), q=($('projectSearch').value||'').toLowerCase();
+  const rows=s.projects.filter(x=>(!f||x.project.toLowerCase()===f)&&(!q||x.project.toLowerCase().includes(q)));
+  $('projectTable').innerHTML=rows.map(x=>`<tr><td><b>${esc(x.project)}</b></td><td>${fmt(x.active_seconds)}</td><td>${fmt(x.app_seconds)}</td><td>${fmt(x.browser_seconds)}</td><td>${x.file_events}</td><td>${x.visits}</td><td>${x.goal_minutes?fmt(x.goal_minutes*60)+' ('+x.goal_percent+'%)': '—'}</td><td><div class="progress" style="width:120px"><div style="width:${Math.min(100,x.goal_percent||0)}%"></div></div></td></tr>`).join('')||'<tr><td colspan="8" class="muted">No projects match this filter.</td></tr>';
+}
+function renderAppTable(){
+  const s=state.summary; if(!s) return;
+  const q=($('appSearch').value||'').toLowerCase();
+  const rows=(s.app_details||[]).filter(x=>!q||(x.app+' '+x.title+' '+x.project).toLowerCase().includes(q));
+  $('appTable').innerHTML=rows.map(x=>`<tr><td>${esc(x.app)}</td><td>${esc(x.title)}</td><td>${esc(x.project)}</td><td>${fmt(x.active_seconds)}</td><td>${x.sessions}</td></tr>`).join('')||'<tr><td colspan="5" class="muted">No apps match.</td></tr>';
+}
+function shift(days){const d=new Date(state.date+'T12:00:00');d.setDate(d.getDate()+days);state.date=d.toISOString().slice(0,10);load()}
+$('prevBtn').onclick=()=>shift(-1); $('nextBtn').onclick=()=>shift(1);
+$('todayBtn').onclick=()=>{state.date=new Date().toISOString().slice(0,10);load()};
+$('dateInput').onchange=e=>{state.date=e.target.value;load()};
+$('refreshBtn').onclick=load;
+document.querySelectorAll('.rangeBtn').forEach(b=>b.onclick=()=>{document.querySelectorAll('.rangeBtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.days=+b.dataset.days;load()});
+$('projectFilter').onchange=renderProjectTable; $('projectSearch').oninput=renderProjectTable; $('appSearch').oninput=renderAppTable;
+let timer=null; $('autoRefresh').onchange=e=>{clearInterval(timer);if(e.target.checked)timer=setInterval(load,30000)};
+load();
+</script>
+</body>
+</html>

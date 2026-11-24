@@ -1,0 +1,116 @@
+# DeskAudit projects — edit freely. A project is a named bucket of work.
+# Every app session, file event, browser visit/session/download/search gets
+# one primary project + optional secondary tags, chosen by the rules below.
+#
+# How matching works:
+#   1. `overrides` (exact match) always win.
+#   2. Then rules, highest `priority` first. A rule matches if ANY of its
+#      conditions match. All matching projects also add their `tags`.
+#   3. Nothing matches -> `default_project` ("Untagged").
+#
+# Rule fields (all optional): folders, file_patterns, file_extensions, apps,
+# window_keywords, window_regex, domains, url_contains, url_regex,
+# search_keywords, tags, priority, color, daily_goal_minutes, parent, description.
+
+default_project: "Untagged"
+
+projects:
+  - name: "Office"
+    description: "Office work: docs, spreadsheets, mail, meetings"
+    color: "#2563eb"
+    daily_goal_minutes: 240
+    priority: 100
+    folders:
+      - "%USERPROFILE%/Documents/Office"
+      - "%USERPROFILE%/Desktop/Office"
+    file_patterns:
+      - "*office*"
+      - "*report*"
+    file_extensions:
+      - ".xlsx"
+      - ".pptx"
+    apps:
+      - "WINWORD.EXE"
+      - "EXCEL.EXE"
+      - "POWERPNT.EXE"
+      - "OUTLOOK.EXE"
+    window_keywords:
+      - "Office"
+      - "Meeting"
+    domains:
+      - "outlook.office.com"
+      - "teams.microsoft.com"
+      - "outlook.live.com"
+    tags: ["work"]
+
+  - name: "Study"
+    description: "Courses, learning, practice"
+    color: "#16a34a"
+    daily_goal_minutes: 120
+    priority: 90
+    folders:
+      - "%USERPROFILE%/Documents/Study"
+      - "%USERPROFILE%/Desktop/Study"
+    window_keywords:
+      - "Course"
+      - "Tutorial"
+    domains:
+      - "coursera.org"
+      - "udemy.com"
+      - "khanacademy.org"
+      - "w3schools.com"
+      - "geeksforgeeks.org"
+      - "wikipedia.org"
+    search_keywords:
+      - "python tutorial"
+      - "how to"
+    tags: ["learning"]
+
+  - name: "DeskAudit"
+    description: "Building DeskAudit itself"
+    color: "#9333ea"
+    daily_goal_minutes: 60
+    priority: 110
+    folders:
+      - "%USERPROFILE%/Documents/DeskAudit"
+    file_patterns:
+      - "*deskaudit*"
+    file_extensions:
+      - ".py"
+    window_keywords:
+      - "DeskAudit"
+    domains:
+      - "github.com"
+    tags: ["coding", "work"]
+
+  - name: "Personal"
+    description: "Personal browsing, photos, social"
+    color: "#ea580c"
+    daily_goal_minutes: 0
+    priority: 10
+    folders:
+      - "%USERPROFILE%/Pictures"
+      - "%USERPROFILE%/Desktop/Personal"
+    domains:
+      - "facebook.com"
+      - "instagram.com"
+      - "youtube.com"
+      - "netflix.com"
+    tags: ["personal"]
+
+  - name: "Freelance"
+    description: "Client work — add your client folders / domains here"
+    color: "#0891b2"
+    daily_goal_minutes: 0
+    priority: 95
+    folders:
+      - "%USERPROFILE%/Documents/Freelance"
+    tags: ["work", "client"]
+
+# Manual overrides — exact matches, they beat every rule.
+# match_type: domain | url | file | app | title
+overrides:
+  - match_type: "domain"
+    match_value: "github.com/python/cpython"
+    project: "Study"
+    tags: ["learning"]

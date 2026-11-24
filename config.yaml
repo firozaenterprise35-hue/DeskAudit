@@ -1,0 +1,118 @@
+# DeskAudit configuration — edit freely, all keys are optional.
+# Paths support %USERPROFILE% and ~ expansion on Windows.
+
+poll_interval_seconds: 5
+idle_threshold_seconds: 300
+db_path: "data/deskaudit.db"
+log_path: "data/deskaudit.log"
+
+watch_folders:
+  - "%USERPROFILE%/Desktop"
+  - "%USERPROFILE%/Documents"
+
+# Skip noisy / temporary files. Matching is case-insensitive.
+exclude_extensions:
+  - ".tmp"
+  - ".log"
+  - ".lock"
+  - ".part"
+  - ".crdownload"
+
+exclude_folders:
+  - "data"
+  - "reports"
+  - ".venv"
+  - "__pycache__"
+
+# --- Browser tracking -------------------------------------------------
+# History polling reads Chrome / Edge / Brave / Opera / Vivaldi History
+# and Firefox places.sqlite (copied first, because the browser locks them).
+# No extension is needed for this layer. Incognito history is never stored
+# by the browser, so it is never tracked.
+browser_enabled: true
+browser_poll_seconds: 60
+track_downloads: true
+track_searches: true
+
+# Exact active-tab URL, optional, pick ONE if you want it:
+# 1) CDP: launch Chrome with --remote-debugging-port=9222, then set this to 9222.
+browser_cdp_port: 0
+# 2) Extension: install extension/chrome/ in Chrome/Edge, then set this true.
+#    The extension POSTs the active tab to 127.0.0.1:8765 (localhost only).
+browser_receiver_enabled: false
+browser_receiver_port: 8765
+
+# Your own overrides — these win over the built-in category list.
+productive_domains:
+  - "github.com"
+distracting_domains:
+  - "facebook.com"
+  - "youtube.com"
+
+# Never log these domains at all (e.g. banking, health).
+exclude_domains: []
+
+# --- Alerts -----------------------------------------------------------
+# All thresholds are editable. Set enabled: false to turn alerts off.
+alerts:
+  enabled: true
+  deletion_burst_count: 5        # 5 deletions within deletion_burst_minutes
+  deletion_burst_minutes: 10
+  deletion_folder_count: 3       # 3 deletions from one folder in a day
+  night_start_hour: 0            # unknown app running 00:00-05:00
+  night_end_hour: 5
+  distracting_minutes: 60        # distracting browser time per day
+  untagged_minutes: 60           # untagged time that also exceeds untagged_percent
+  untagged_percent: 50
+  idle_minutes: 120
+  large_download_mb: 500
+  notify: true                   # try a Windows notification for new alerts
+  # new_app is quiet: only non-safe apps used at least this long today.
+  new_app_min_minutes: 5
+  known_safe_apps:
+    - "chrome.exe"
+    - "msedge.exe"
+    - "firefox.exe"
+    - "brave.exe"
+    - "opera.exe"
+    - "vivaldi.exe"
+    - "code.exe"
+    - "notepad.exe"
+    - "explorer.exe"
+    - "winword.exe"
+    - "excel.exe"
+    - "powerpnt.exe"
+    - "outlook.exe"
+    - "teams.exe"
+    - "zoom.exe"
+    - "slack.exe"
+    - "discord.exe"
+
+# --- Backups ----------------------------------------------------------
+# backups/deskaudit-YYYY-MM-DD-HHMMSS.db — made with sqlite3 online backup.
+# The agent makes one automatically each day on start (backup_on_start).
+# Backups are git-ignored: they contain your private activity data.
+backup_keep_days: 30
+backup_keep_count: 30
+backup_on_start: true
+
+# --- Daily summary ----------------------------------------------------
+# Local rule-based Bengali narrative, no AI API key, no internet.
+# python main.py --ai-summary          (today)
+# python main.py --ai-summary --weekly (7-day review)
+# 9pm automatic job: double-click schedule_summary.bat (Windows Task Scheduler).
+
+# --- Optional LLM summary ---------------------------------------------
+# Local summary is ALWAYS the default. Only --ai-summary --llm uses this,
+# and only aggregated stats are sent (no titles, paths or URLs).
+# Provider "gemini" = Google AI Studio key (free tier, starts with AIza...).
+# Get one at https://aistudio.google.com/app/apikey
+# Give the key via DESKAUDIT_LLM_API_KEY env var (recommended) or in
+# config.local.yaml (git-ignored). NEVER put the key in this file — it is
+# tracked by git. Other providers: "openai" (gpt-4o-mini), "anthropic".
+llm:
+  enabled: false
+  provider: "gemini"
+  api_key: ""             # leave empty to use the env var instead
+  model: "gemini-2.5-flash"
+  base_url: ""            # only for openai-compatible providers

@@ -1,0 +1,1 @@
+{"background":{"service_worker":"background.js"},"description":"Reports the active tab (URL + title only) to the local DeskAudit agent on 127.0.0.1:8765. No data leaves your computer.","host_permissions":["http://127.0.0.1:8765/*"],"manifest_version":3,"name":"DeskAudit Tab Reporter","permissions":["tabs","alarms"],"version":"0.1.0"}

@@ -1,0 +1,314 @@
+"""Active browser tracking — the live layer on top of history polling.
+
+Three sources, in order of accuracy, all optional and all local:
+1. Extension receiver (exact URL + title in real time) — see
+   extension/chrome/ and deskaudit/browser_receiver.py. Best accuracy.
+2. Chrome DevTools Protocol (CDP) — if the browser was started with
+   --remote-debugging-port=9222, http://127.0.0.1:9222/json/list gives
+   the exact active tab. No extension needed.
+3. History polling + window title — always works, no setup. The tracker
+   polls History / places.sqlite every browser_poll_seconds, matches the
+   foreground window title to the most recent visit with the same title,
+   and falls back to "title only" when no URL can be matched yet.
+
+What is tracked per browser session (one row per browser + domain + title):
+    started / ended, duration, active vs idle seconds, tab switches.
+What is tracked per visit (from history): browser, URL, domain, title,
+    visited_at, search query (if any), category, productive or not.
+What is tracked per download: browser, URL, file name, size, state.
+What is NOT tracked: incognito history, passwords, cookies, form data,
+    clipboard, keystrokes, or the body of any page.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+from .browser_history import (
+    discover_profiles,
+    read_profile_downloads,
+    read_profile_history,
+)
+from .browser_utils import (
+    base_domain,
+    browser_for_exe,
+    classify_domain,
+    clean_window_title,
+    domain_of,
+    extract_search_query,
+    is_browser_exe,
+)
+from .database import Database
+
+
+class BrowserTracker:
+    def __init__(self, db: Database, config, profiles=None, tagger=None):
+        self.db = db
+        self.config = config
+        self.tagger = tagger
+        # profiles=None -> auto-discover on Windows; tests inject their own.
+        self._profiles = profiles
+        self._last_history_poll: datetime | None = None
+        self._poll_count = 0
+        # Active browser session state.
+        self._session_id: int | None = None
+        self._key: tuple | None = None
+        self._started_at: datetime | None = None
+        self._active = 0.0
+        self._idle = 0.0
+        self._tab_switches = 0
+
+    # -- history ------------------------------------------------------
+    @property
+    def profiles(self):
+        if self._profiles is None:
+            self._profiles = discover_profiles()
+        return self._profiles
+
+    def _last_seen(self, source: str) -> datetime | None:
+        raw = self.db.get_state(f"browser_last_seen:{source}")
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    def poll_history(self, now: datetime | None = None) -> dict:
+        """Read new history + downloads from every profile. Returns counts."""
+        now = now or datetime.now().astimezone()
+        counts = {"visits": 0, "downloads": 0, "searches": 0}
+        if not getattr(self.config, "browser_enabled", True):
+            return counts
+        for profile in self.profiles:
+            source = f"{profile.browser}:{profile.profile_name}"
+            since = self._last_seen(source)
+            try:
+                visits = read_profile_history(profile, since)
+            except Exception:
+                continue
+            newest: datetime | None = since
+            for visit in visits:
+                if self._is_excluded_domain(visit.domain):
+                    continue
+                project, tags = self._tag(visit.url, visit.domain, visit.title,
+                                          visit.search_query or "")
+                added = self.db.log_browser_visit(
+                    visit.browser, visit.url, visit.domain, visit.title,
+                    visit.visited_at, visit.search_query,
+                    project=project, tags=tags,
+                )
+                if added:
+                    counts["visits"] += 1
+                    if visit.search_query:
+                        counts["searches"] += 1
+                        self.db.log_browser_search(
+                            visit.browser, visit.search_query, visit.url,
+                            visit.domain, visit.visited_at,
+                            project=project, tags=tags,
+                        )
+                if newest is None or visit.visited_at > newest:
+                    newest = visit.visited_at
+            if getattr(self.config, "track_downloads", True):
+                try:
+                    downloads = read_profile_downloads(profile, since)
+                except Exception:
+                    downloads = []
+                for dl in downloads:
+                    project, tags = (self.tagger.tag_download(dl.url, dl.domain, dl.file_path)
+                                     if self.tagger is not None else ("Untagged", []))
+                    if self.db.log_browser_download(
+                        dl.browser, dl.url, dl.domain, dl.file_path,
+                        dl.file_name, dl.total_bytes, dl.received_bytes,
+                        dl.state, dl.started_at,
+                        project=project, tags=tags,
+                    ):
+                        counts["downloads"] += 1
+            if newest is not None:
+                self.db.set_state(f"browser_last_seen:{source}", newest.isoformat())
+        self._last_history_poll = now
+        self._poll_count += 1
+        return counts
+
+    def _is_excluded_domain(self, domain: str) -> bool:
+        excluded = getattr(self.config, "exclude_domains", set()) or set()
+        return any(item.lower() in (domain or "").lower() for item in excluded)
+
+    def _tag(self, url: str = "", domain: str = "", title: str = "",
+             search_query: str = "") -> tuple[str, list[str]]:
+        if self.tagger is None:
+            return "Untagged", []
+        return self.tagger.tag_browser(url=url, domain=domain, title=title,
+                                       search_query=search_query)
+
+    # -- exact URL, when available -------------------------------------
+    def cdp_active_tab(self) -> dict | None:
+        """Ask CDP (port from config) for the active tab. Returns None if
+        the browser was not started with --remote-debugging-port."""
+        port = getattr(self.config, "browser_cdp_port", 0) or 0
+        if not port:
+            return None
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/json/list", timeout=0.5
+            ) as resp:
+                tabs = json.loads(resp.read().decode("utf-8", "ignore"))
+        except Exception:
+            return None
+        for tab in tabs:
+            if tab.get("type") != "page":
+                continue
+            url = tab.get("url", "")
+            if url.startswith(("http://", "https://")):
+                return {"url": url, "title": tab.get("title", ""), "domain": domain_of(url)}
+        return None
+
+    def record_extension_tab(self, browser: str, url: str, title: str,
+                             at: datetime | None = None) -> None:
+        """Called by browser_receiver.py when the extension reports a tab.
+        Treated as a visit (deduped) and as the current active session."""
+        at = at or datetime.now().astimezone()
+        from .browser_utils import redact_url
+
+        url = redact_url(url)
+        domain = domain_of(url)
+        if self._is_excluded_domain(domain):
+            return
+        query = extract_search_query(url)
+        project, tags = self._tag(url, domain, title, query or "")
+        if self.db.log_browser_visit(browser, url, domain, title[:200], at, query,
+                                     project=project, tags=tags):
+            if query:
+                self.db.log_browser_search(browser, query, url, domain, at,
+                                           project=project, tags=tags)
+        # Feed the session tracker with the exact URL.
+        self._session_from_url(browser, url, title, at)
+
+    # -- active session (foreground window) ----------------------------
+    def _session_from_url(self, browser: str, url: str, title: str, now: datetime) -> None:
+        domain = domain_of(url)
+        category, productive = classify_domain(
+            domain,
+            getattr(self.config, "productive_domains", set()),
+            getattr(self.config, "distracting_domains", set()),
+        )
+        key = (browser, domain, clean_window_title(title))
+        if key != self._key:
+            if self._session_id is not None:
+                self._tab_switches += 1  # leaving this tab for another one
+            self._close_session(now)
+            project, tags = self._tag(url, domain, title)
+            self._session_id = self.db.start_browser_session(
+                browser, url, domain, clean_window_title(title),
+                category, productive, now,
+                project=project, tags=tags,
+            )
+            self._key = key
+            self._started_at = now
+
+    def tick(self, window, idle: bool, poll_interval: float = 5.0) -> dict | None:
+        """One poll. `window` is an ActiveWindow from app_tracker.
+        Returns the current browser info, or None when not in a browser."""
+        now = datetime.now().astimezone()
+        exe = getattr(window, "app_name", "") or ""
+        if not is_browser_exe(exe):
+            self._close_session(now)
+            return None
+        browser, _engine = browser_for_exe(exe) or ("Browser", "chromium")
+        title = clean_window_title(getattr(window, "title", "") or "")
+
+        # 1) Exact URL if CDP is available.
+        url = ""
+        cdp = self.cdp_active_tab()
+        if cdp and (not title or cdp.get("title", "")[:60] in title or title[:60] in cdp.get("title", "")):
+            url = cdp["url"]
+        # 2) Otherwise match the title to the most recent visit.
+        if not url:
+            url = self.db.latest_url_for_title(browser, title)
+        if url:
+            self._session_from_url(browser, url, title, now)
+        else:
+            # Title only: domain unknown yet, history poll will fill it in.
+            key = (browser, "", title)
+            if key != self._key:
+                if self._session_id is not None:
+                    self._tab_switches += 1
+                self._close_session(now)
+                category, productive = classify_domain("")
+                project, tags = self._tag("", "", title)
+                self._session_id = self.db.start_browser_session(
+                    browser, "", "", title, category, productive, now,
+                    project=project, tags=tags,
+                )
+                self._key = key
+                self._started_at = now
+
+        if idle:
+            self._idle += poll_interval
+        else:
+            self._active += poll_interval
+        return {"browser": browser, "title": title, "url": url,
+                "domain": domain_of(url) if url else ""}
+
+    def note_tab_switch(self) -> None:
+        self._tab_switches += 1
+
+    def _close_session(self, now: datetime) -> None:
+        if self._session_id is None or self._started_at is None:
+            return
+        duration = (now - self._started_at).total_seconds()
+        self.db.close_browser_session(
+            self._session_id, now, duration, self._active, self._idle,
+            self._tab_switches,
+        )
+        self._session_id = None
+        self._key = None
+        self._started_at = None
+        self._active = 0.0
+        self._idle = 0.0
+        self._tab_switches = 0
+
+    def stop(self) -> None:
+        self._close_session(datetime.now().astimezone())
+
+    # -- one-off audit --------------------------------------------------
+    def audit_now(self) -> dict:
+        """Import all history (no `since` filter) — for --browser-audit."""
+        counts = {"visits": 0, "downloads": 0, "searches": 0, "profiles": 0}
+        for profile in self.profiles:
+            counts["profiles"] += 1
+            for visit in read_profile_history(profile, None):
+                if self._is_excluded_domain(visit.domain):
+                    continue
+                project, tags = self._tag(visit.url, visit.domain, visit.title,
+                                          visit.search_query or "")
+                if self.db.log_browser_visit(
+                    visit.browser, visit.url, visit.domain, visit.title,
+                    visit.visited_at, visit.search_query,
+                    project=project, tags=tags,
+                ):
+                    counts["visits"] += 1
+                    if visit.search_query:
+                        counts["searches"] += 1
+                        self.db.log_browser_search(
+                            visit.browser, visit.search_query, visit.url,
+                            visit.domain, visit.visited_at,
+                            project=project, tags=tags,
+                        )
+                self.db.set_state(
+                    f"browser_last_seen:{profile.browser}:{profile.profile_name}",
+                    visit.visited_at.isoformat(),
+                )
+            for dl in read_profile_downloads(profile, None):
+                project, tags = (self.tagger.tag_download(dl.url, dl.domain, dl.file_path)
+                                 if self.tagger is not None else ("Untagged", []))
+                if self.db.log_browser_download(
+                    dl.browser, dl.url, dl.domain, dl.file_path, dl.file_name,
+                    dl.total_bytes, dl.received_bytes, dl.state, dl.started_at,
+                    project=project, tags=tags,
+                ):
+                    counts["downloads"] += 1
+        return counts

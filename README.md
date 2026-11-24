@@ -1,0 +1,423 @@
+# DeskAudit — Windows Desktop Audit Agent (MVP)
+
+DeskAudit is a local-first Python agent that quietly audits what happens on a
+Windows desktop: which apps you use, which window is in front, which files
+are created / edited / renamed / deleted, and when you are idle.
+
+It does **not** log keystrokes, passwords, clipboard contents, or the text
+inside your files. It logs metadata only: app name, window title, file path,
+event type, and timestamps.
+
+## What the MVP does
+
+- **App / window tracking** — polls the foreground window every few seconds
+  (`psutil` + `pywin32`) and stores one session per app + window title.
+- **File watching** — watches Desktop and Documents with `watchdog` and
+  records created / modified / deleted / moved events.
+- **Idle detection** — uses Windows `GetLastInputInfo`. After 5 minutes
+  (configurable) with no input, time is counted as idle, not active work.
+- **Browser tracking (full)** — see below.
+- **Project tagging (full)** — see below.
+- **Web dashboard (full)** — see below. Stdlib only, no extra install.
+- **Alerts (full)** — see below.
+- **Daily AI summary + weekly review (full)** — see below. Local Bengali narrative, no API key.
+- **Local storage** — everything goes to SQLite at `data/deskaudit.db`.
+  No cloud upload, no account, no telemetry.
+- **Daily report** — `python main.py --report` prints a summary and writes
+  `reports/YYYY-MM-DD.md`, `reports/YYYY-MM-DD.csv` and
+  `reports/YYYY-MM-DD-browser.csv`.
+
+## Browser tracking — everything it covers
+
+No extension is needed for the default layer. While the agent runs it
+polls browser history every `browser_poll_seconds` (default 60s).
+
+| Feature | How it works | Where it lands |
+|---|---|---|
+| Browsers | Chrome, Edge, Brave, Opera, Vivaldi (Chromium) + Firefox | auto-discovered profiles |
+| History / visits | Reads `History` / `places.sqlite` — copied first, because the browser locks the original | `browser_visits` |
+| Active tab + time per site | Foreground window title + history match, per browser + domain + title session, active vs idle | `browser_sessions` |
+| Exact active-tab URL (optional) | 1) Extension in `extension/chrome/` → localhost receiver on 127.0.0.1:8765, or 2) CDP: launch Chrome with `--remote-debugging-port=9222` | same session, with URL |
+| Domain + category | 60+ built-in domains (coding, work, email, learning, search, social, video, shopping, news) + your `productive_domains` / `distracting_domains` in `config.yaml` | `category`, `is_productive` |
+| Time per domain | Productive vs distracting time, domains used, top domains | daily report |
+| Search queries | Extracted from the URL: Google/Bing/DuckDuckGo `q=`, Yahoo `p=`, YouTube `search_query=`, Brave/Ecosia `q=`, Baidu `wd`, Yandex `text` | `browser_searches` |
+| Downloads | Chromium `downloads` table: file name, path, size, state (complete / cancelled / interrupted) | `browser_downloads` |
+| Tab switches | Counted when the foreground browser title changes to another tab | `browser_sessions.tab_switches` |
+| Bookmarks | Chromium `Bookmarks` JSON + Firefox `moz_bookmarks` (reader functions, used by `--browser-audit` tooling) | `browser_history.read_*_bookmarks()` |
+| Dedup | `UNIQUE(browser, url, visited_at)` + a per-profile last-seen watermark in `kv_state`, so re-running never double-counts | — |
+| Exclusions | `exclude_domains` in `config.yaml` is never logged; sensitive URL params (`token`, `password`, `api_key`, `code`, …) are stripped by `redact_url()` | — |
+
+What is **not** tracked: incognito / private history (browsers never write
+it), passwords, cookies, form data, saved logins, clipboard, keystrokes,
+or page content.
+
+One-off import of everything already in history:
+
+```bat
+python main.py --browser-audit
+python main.py --report
+```
+
+## Project tagging — everything it covers
+
+Every app session, file event, browser visit / session / download / search
+gets one primary project + optional secondary tags, stored in the `project`
+and `tags` columns of every table. Projects are defined in `projects.yaml`
+(shipped with Office, Study, DeskAudit, Personal, Freelance examples).
+
+| Feature | How it works |
+|---|---|
+| Rule types | `folders` (path prefix), `file_patterns` (fnmatch, e.g. `*report*`), `file_extensions` (`.xlsx`, `.py`), `apps` (exe name), `window_keywords`, `window_regex`, `domains`, `url_contains`, `url_regex`, `search_keywords` |
+| Priority | Highest `priority` wins for the primary project; all other matching projects add their name + `tags` as secondary tags |
+| Manual override | Exact match, always wins: `overrides` in `projects.yaml`, or `python main.py --project-tag domain github.com --project Study` (saved in DB, survives restart) |
+| Parent / subproject | `parent: "Office"` on a project, e.g. `Office / Client A` — report still shows the child, parent is kept for dashboards |
+| Daily goal | `daily_goal_minutes` per project — report shows `goal 4h, 56%` and a ✓ when met |
+| Color | `color: "#2563eb"` per project, for future dashboards |
+| Untagged | Nothing matches → `default_project` (`Untagged`). Report lists untagged time + top untagged apps / domains / titles |
+| Suggestions | `python main.py --suggest-projects` turns the top untagged items into copy-paste YAML rules |
+| Retag old data | Edit `projects.yaml`, then `python main.py --retag` (or `--retag --date 2026-11-23`) — recomputes every stored row, no data loss |
+| Add a project | `python main.py --projects` to list, `python main.py --project-add "Client A" --folder "%USERPROFILE%/Documents/ClientA" --goal 120` to append |
+| Report | Per-project active time (app + browser split), file events, visits, goal % — in text, Markdown, and `reports/YYYY-MM-DD-projects.csv` |
+
+Project time is never double-counted: browser time is a subset of app
+time, so a project's active time = app time + browser time − the part
+where they overlap in the same project (measured session by session).
+Browser time whose app session was tagged to a different project still
+counts, because it is genuinely extra time for that project.
+
+Example `projects.yaml` rule:
+
+```yaml
+- name: "Office"
+  daily_goal_minutes: 240
+  priority: 100
+  folders: ["%USERPROFILE%/Documents/Office"]
+  apps: ["WINWORD.EXE", "EXCEL.EXE"]
+  domains: ["teams.microsoft.com"]
+  window_keywords: ["Meeting"]
+  tags: ["work"]
+```
+
+## Web dashboard — everything it covers
+
+Start it, then it opens in your browser:
+
+```bat
+python main.py --dashboard
+REM or double-click dashboard.bat
+REM http://127.0.0.1:8000/  (localhost only, Ctrl+C to stop)
+```
+
+No extra package is needed — the server is Python's stdlib
+`http.server`, and the page uses vanilla JS + CSS, no CDN, so it works
+offline. All data comes from `data/deskaudit.db` on this computer.
+
+| Section | What you see |
+|---|---|
+| Header | Date picker, Prev / Next day, Today, trend range 7 / 14 / 30 days, Refresh, Auto-refresh 30s, Export (Markdown, Apps CSV, Browser CSV, Projects CSV) |
+| KPI cards (12) | Active, Idle, Apps used, Browser time, Productive, Distracting, Projects worked, File events, Visits, Searches, Downloads, Untagged time — each with its sub-note (%, goals met, …) |
+| Today at a glance | One sentence: active / idle, apps, browser productive vs distracting, projects worked |
+| Hourly activity | Bar chart, 0–23h, active minutes per hour (browser is a subset, never added on top; hover shows browser minutes) |
+| Productive vs distracting | Donut chart with % + legend |
+| Projects | Bar + goal progress per project: active, app / browser split, files, visits, goal %, ✓ when met |
+| Top apps | Horizontal bars, top 10 by active time |
+| Top domains | Horizontal bars, top 10 by active time / visits |
+| Browser categories | Bars by category (coding, work, social, video, …) |
+| File events by type | Bars: created / modified / deleted / moved |
+| Trend | Active minutes per day for the last 7 / 14 / 30 days |
+| Projects table | Project, Active, App, Browser, Files, Visits, Goal, Progress — with project dropdown filter + text search |
+| App sessions table | App, window title, project, active, sessions — with text search |
+| Browser tables | Top domains, top searches, downloads |
+| Recent file events | Last 20: when, event, path, project |
+| Untagged | Top untagged apps / domains / titles, with a hint to add a rule + `--retag` |
+| Alerts | Today's alerts with severity badges (🔴 critical / 🟡 warning / 🔵 info) |
+| Daily summary | Bengali narrative for the day, all 7 sections |
+| Weekly review | 7-day review: totals, best / weakest day, top project, trend |
+
+API (JSON, local only): `GET /api/health`, `/api/summary?date=YYYY-MM-DD`,
+`/api/range?days=7&end=YYYY-MM-DD`, `/api/alerts?date=YYYY-MM-DD`,
+`/api/narrative?date=YYYY-MM-DD`, `/api/weekly?end=YYYY-MM-DD&days=7`,
+`/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects`.
+
+Options: `python main.py --dashboard --port 8001 --host 127.0.0.1 --no-open`.
+Do not use `--host 0.0.0.0` on an untrusted network — the page shows
+window titles and URLs.
+
+## Alerts — everything it covers
+
+Fully local rule engine, no internet, no API key. The agent re-checks
+every 30 minutes while it runs; you can also check manually.
+
+```bat
+python main.py --alerts            # check today, save new ones, print them
+python main.py --alerts --date 2026-11-23
+python main.py --alerts --notify   # also try a Windows notification
+python main.py --alerts-list       # show stored alerts
+python main.py --alerts-list --unread
+```
+
+| Rule | Severity | When it fires |
+|---|---|---|
+| `deletion_burst` | 🔴 critical | 5+ files deleted within 10 minutes (defaults in `config.yaml`) |
+| `deletion_folder_burst` | 🟡 warning | 3+ deletions from one folder in a day |
+| `unknown_app_night` | 🔴 critical | An app never seen before THAT session, running 00:00–05:00. An app already used earlier (even the same day) does not count as unknown at night. |
+| `new_app` | 🔵 info | An app seen for the very first time today, only if it is not a well-known safe app (Chrome, Word, … in `config.yaml`) and it was used at least 5 minutes today. Short launches do not alert. |
+| `distracting_over` | 🟡 warning | Distracting browser time over 60 min/day |
+| `project_goal_met` | 🔵 info | A project reached its daily goal |
+| `project_goal_missed` | 🟡 warning | A project reached < 50% of its goal (past days only — today isn't over yet) |
+| `untagged_spike` | 🟡 warning | Untagged time over 60 min AND over 50% of active time |
+| `idle_over` | 🔵 info | Idle time over 120 min/day |
+| `large_download` | 🟡 warning | A single download over 500 MB |
+
+All thresholds live under `alerts:` in `config.yaml`. Alerts are stored
+in the `alerts` table, deduped on (date, type, title), so re-running
+never duplicates them — only NEW alerts are notified. Notification tries
+`plyer` if installed, otherwise a PowerShell toast; on Linux it simply
+skips notification (alerts are still saved and shown on the dashboard).
+The dashboard has an Alerts card (`/api/alerts?date=...`) with severity badges.
+
+## Daily AI summary + weekly review — everything it covers
+
+Local, rule-based Bengali narrative — no LLM, no API key, no internet.
+It is computed from the same `build_summary()` data as the reports.
+
+```bat
+python main.py --ai-summary                 # today -> reports/YYYY-MM-DD-summary.md
+python main.py --ai-summary --date 2026-11-23
+python main.py --ai-summary --weekly         # 7-day review -> reports/YYYY-MM-DD-weekly.md
+```
+
+Daily summary sections (none skipped when data exists): headline, মূল কাজ
+(top project / app / domain), প্রোডাক্টিভিটি (productive vs distracting +
+yesterday comparison), প্রজেক্ট ও গোল (goal % and ✓), ফাইল (created /
+modified / deleted / moved), ব্রাউজার (top searches, downloads, visits),
+আনট্যাগড, আগামীকালের জন্য (insights: distracting > productive, one app >
+50% of the day, goal < 50%, 5+ deletions, untagged time).
+
+Weekly review sections: মোট হিসাব (total / average active, idle, browser,
+visits, files), সেরা ও দুর্বল দিন, টপ প্রজেক্ট, ট্রেন্ড (second half vs
+first half), আগামী সপ্তাহের জন্য — plus a day-by-day table.
+
+Both appear on the dashboard too (Daily Summary and Weekly Review
+sections, `/api/narrative?date=...` and `/api/weekly?end=...&days=7`).
+If you later want real LLM-written text instead of the local narrative,
+tell me and I can add an optional LLM variant that needs an API key you
+provide — the local version stays the default.
+
+## Folder structure
+
+```text
+DeskAudit/
+├── main.py                  # Entry point: run the agent or make a report
+├── config.yaml              # Poll interval, idle threshold, watched folders
+├── requirements.txt
+├── run.bat                  # Double-click to start on Windows
+├── dashboard.bat            # Double-click to open the dashboard
+├── deskaudit/
+│   ├── __init__.py
+│   ├── config.py            # Loads config.yaml, with safe defaults
+│   ├── database.py          # SQLite schema + insert / query helpers
+│   ├── app_tracker.py       # Foreground window + process tracking
+│   ├── file_watcher.py      # watchdog handler for file events
+│   ├── idle.py              # GetLastInputInfo wrapper
+│   ├── browser_utils.py     # Domain, category, search, URL redaction, time conversion
+│   ├── browser_history.py   # Chromium + Firefox history / download / bookmark readers
+│   ├── browser_tracker.py   # Active tab, history polling, CDP, search, downloads
+│   ├── browser_receiver.py  # Localhost receiver for the browser extension
+│   ├── projects.py          # Project rule engine: Tagger, Project, Override
+│   ├── alerts.py            # Alerts rule engine + Windows notification
+│   ├── summary.py           # Daily Bengali summary + weekly review
+│   ├── dashboard.py         # Web dashboard: data API + stdlib HTTP server
+│   ├── dashboard_static/
+│   │   └── index.html       # Dashboard page: cards, charts, tables, filters
+│   ├── report.py            # Daily summary: Markdown + CSV (incl. browser + projects)
+│   └── utils.py             # Duration formatting, path helpers
+├── projects.yaml            # Your projects + rules + overrides (edit this)
+├── extension/chrome/        # Optional Tab Reporter extension (Manifest V3)
+├── data/                    # deskaudit.db + deskaudit.log (created on run)
+├── reports/                 # Daily reports (created on run)
+└── tests/
+    ├── test_smoke.py        # Import + DB + report smoke test, no Windows needed
+    ├── test_browser.py      # Synthetic Chrome + Firefox DB tests
+    ├── test_projects.py     # Rule engine + retag + project report tests
+    ├── test_dashboard.py    # Dashboard summary + live HTTP server tests
+    ├── test_alerts.py       # Every alert rule + dedup + save/list tests
+    └── test_summary.py      # Daily + weekly Bengali summary tests
+```
+
+## Quick start (Windows)
+
+```bat
+py -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy config.yaml config.local.yaml
+REM Edit config.local.yaml if you want different folders, then:
+run.bat
+```
+
+Or from a terminal:
+
+```bat
+python main.py
+```
+
+Stop with `Ctrl+C`. The current app session is closed cleanly on exit.
+
+Pause tracking any time by creating an empty file named `PAUSE` in the
+project folder, and delete it to resume. Useful for private work.
+
+## Version history (git) & rollback
+
+The project is a git repository (`main` branch). No remote is set yet —
+nothing has been pushed anywhere. Useful commands:
+
+```bash
+git log --oneline          # history
+git status                 # what changed since the last commit
+git diff                   # see the changes
+git commit -am "what changed"   # save a new version
+git checkout <commit> -- <file> # restore one file from an old version
+git revert <commit>        # undo a commit safely (keeps history)
+git reset --hard <commit>  # go back to a version (discards later changes)
+```
+
+`data/`, `reports/`, `backups/` and `*.db` are git-ignored — your private
+activity data never goes into git. Only code, config and tests are tracked.
+
+## Database backup & restore
+
+```bash
+python main.py --backup              # backups/deskaudit-YYYY-MM-DD-HHMMSS.db
+python main.py --backup-list         # list backups with size + date
+python main.py --restore <file>      # restore a backup
+python main.py --restore --latest    # restore the newest backup
+```
+
+- Backups use sqlite3's online backup (safe while the agent is running).
+- The agent makes one backup automatically each day on start
+  (`backup_on_start` in `config.yaml`); old backups are pruned after
+  `backup_keep_days` / `backup_keep_count` (default 30 / 30).
+- **Restore first saves your current DB** as `backups/deskaudit-before-restore-....db`,
+  so a bad restore can itself be undone. Stop the agent before restoring.
+
+## 9pm automatic job (backup + alerts + daily summary)
+
+On Windows, double-click **`schedule_summary.bat`** (or run
+`python main.py --schedule-summary`). It creates a Task Scheduler task
+"DeskAudit Daily Summary" that runs **every day at 21:00**:
+
+```
+python main.py --evening-job
+```
+
+That one command does: database backup → alerts check → daily summary
+→ weekly review on Sundays. To remove the task, double-click
+`unschedule_summary.bat` or run `python main.py --unschedule-summary`.
+
+## LLM-written summary (optional)
+
+The local rule-based Bengali summary is always the default and needs no
+key. For an LLM-written version, give an API key, then run:
+
+```bash
+python main.py --ai-summary --llm            # daily, LLM text
+python main.py --ai-summary --llm --weekly   # 7-day review, LLM text
+```
+
+**Google AI Studio (Gemini) — recommended, free tier:** get a key at
+https://aistudio.google.com/app/apikey ("Create API key", starts with
+`AIza...`). Default provider is `gemini`, model `gemini-2.5-flash`.
+
+**OpenAI:** provider `openai`, model `gpt-4o-mini`, key starts with `sk-...`.
+**Anthropic:** provider `anthropic`, model `claude-3-5-haiku-latest`.
+
+Give the key via the `DESKAUDIT_LLM_API_KEY` env var (recommended) or
+`llm.api_key` in `config.local.yaml` (git-ignored). **Never put the key
+in `config.yaml` — that file is tracked by git.** The `--llm` flag itself
+is the opt-in, so `llm.enabled` does not also need to be set.
+
+Only **aggregated stats** are sent to the LLM (active/idle minutes, top
+projects with goal %, file/visit counts) — no window titles, file paths
+or URLs. If the key is missing or the LLM call fails, it falls back to
+the local summary and says so in the output.
+
+## Make a report
+
+```bat
+python main.py --report
+python main.py --report --date 2026-11-23
+```
+
+Example output:
+
+```text
+DeskAudit — 2026-11-23
+Active: 5h 12m | Idle: 48m | Apps used: 7
+Top apps:
+  chrome.exe — 2h 41m
+  Code.exe — 1h 35m
+  WINWORD.EXE — 42m
+File events: 18 created, 34 modified, 2 deleted, 1 moved
+Browser: 2h 41m active | 12 domains | 84 visits | productive 1h 58m | distracting 31m
+Top domains:
+  github.com — 1h 12m [work]
+  youtube.com — 24m [video]
+Top searches:
+  python sqlite (x3)
+Downloads:
+  Chrome: report.pdf [complete]
+Projects:
+  Office — 2h 15m [app 1h 40m, browser 35m, 12 files, 8 visits] (goal 4h, 56%)
+  Study — 1h 05m [app 20m, browser 45m, 3 files, 14 visits] (goal 2h, 54%)
+  Untagged — 18m in apps — run: python main.py --suggest-projects
+```
+
+## Configuration
+
+`config.yaml` (all optional, defaults are used when a key is missing):
+
+```yaml
+poll_interval_seconds: 5
+idle_threshold_seconds: 300
+db_path: "data/deskaudit.db"
+watch_folders:
+  - "%USERPROFILE%/Desktop"
+  - "%USERPROFILE%/Documents"
+exclude_extensions: [".tmp", ".log", ".lock"]
+exclude_folders: ["data", "reports", ".venv"]
+```
+
+Paths support `%USERPROFILE%`, `%USERNAME%` and `~` expansion.
+
+## Privacy notes
+
+- Data never leaves the machine in the MVP.
+- Window titles can contain document names. If you share a report, check
+  the titles first.
+- To stop file watching for a folder, remove it from `watch_folders`.
+- Delete history with: delete `data/deskaudit.db` (the agent recreates it).
+
+## Browser configuration
+
+```yaml
+browser_enabled: true
+browser_poll_seconds: 60
+track_downloads: true
+track_searches: true
+browser_cdp_port: 0              # 9222 if Chrome launched with --remote-debugging-port=9222
+browser_receiver_enabled: false  # true after installing extension/chrome/
+browser_receiver_port: 8765
+productive_domains: ["github.com"]
+distracting_domains: ["facebook.com", "youtube.com"]
+exclude_domains: []              # never log these domains
+```
+
+## Next steps after the MVP
+
+Done in v7: git version history, database backup/restore, optional
+LLM-written summary (needs an API key you provide), and the 9pm
+automatic job (backup + alerts + daily summary, Task Scheduler).
+
+Remaining: run it for a real day on Windows and check the first real
+daily summary against your actual work.
