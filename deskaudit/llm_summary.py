@@ -10,7 +10,10 @@ for LLM text AND provides an API key — it never runs on its own.
 Providers:
   * "gemini" (default) — Google AI Studio key, free tier available.
     Get one at https://aistudio.google.com/app/apikey ("Create API key").
-    The key starts with "AIza...". Model default: "gemini-2.5-flash".
+    Keys may start with "AIza..." or "AQ....". Model default:
+    "gemini-3.5-flash-lite" (verified working 2026-11-24; gemini-2.5-flash
+    is retired for new users, and gemini-3.8-flash / 3.7-flash returned
+    503 high-demand errors in the same test).
   * "openai" — OpenAI key ("sk-..."), model default "gpt-4o-mini".
   * "anthropic" — Anthropic key ("sk-ant-..."), model "claude-3-5-haiku-latest".
   * "openai-compatible" — any OpenAI-compatible provider via base_url.
@@ -23,7 +26,7 @@ How to give the key (pick ONE, in this order):
            enabled: true
            provider: "gemini"
            api_key: "AIza..."
-           model: "gemini-2.5-flash"
+           model: "gemini-3.5-flash-lite"
 
 Privacy: only the AGGREGATED daily stats are sent to the LLM (the same
 numbers the local summary already prints: active/idle time, top apps,
@@ -119,7 +122,7 @@ def _call_gemini(llm_cfg: dict, prompt: str) -> str:
     """Google Gemini API (Google AI Studio key, starts with 'AIza...').
     POST https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent
     with an x-goog-api-key header."""
-    model = str(llm_cfg.get("model") or "gemini-2.5-flash")
+    model = str(llm_cfg.get("model") or "gemini-3.5-flash-lite")
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},

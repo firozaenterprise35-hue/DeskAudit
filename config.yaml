@@ -114,5 +114,5 @@ llm:
   enabled: false
   provider: "gemini"
   api_key: ""             # leave empty to use the env var instead
-  model: "gemini-2.5-flash"
+  model: "gemini-3.5-flash-lite"
   base_url: ""            # only for openai-compatible providers

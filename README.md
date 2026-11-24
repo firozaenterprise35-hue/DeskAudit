@@ -326,8 +326,9 @@ python main.py --ai-summary --llm --weekly   # 7-day review, LLM text
 ```
 
 **Google AI Studio (Gemini) — recommended, free tier:** get a key at
-https://aistudio.google.com/app/apikey ("Create API key", starts with
-`AIza...`). Default provider is `gemini`, model `gemini-2.5-flash`.
+https://aistudio.google.com/app/apikey ("Create API key"; keys start with
+`AIza...` or `AQ....`). Default provider is `gemini`, model
+`gemini-3.5-flash-lite` (verified working 2026-11-24).
 
 **OpenAI:** provider `openai`, model `gpt-4o-mini`, key starts with `sk-...`.
 **Anthropic:** provider `anthropic`, model `claude-3-5-haiku-latest`.

@@ -80,14 +80,14 @@ def test_gemini_call_mocked():
     urllib.request.urlopen = fake_urlopen
     try:
         cfg = {"enabled": True, "provider": "gemini",
-               "api_key": "AIzaFakeKey123", "model": "gemini-2.5-flash"}
+               "api_key": "AIzaFakeKey123", "model": "gemini-3.5-flash-lite"}
         text, source = llm_narrative(result, cfg, kind="daily")
     finally:
         urllib.request.urlopen = real
     assert text == "আজ তুমি Office প্রজেক্টে ৩০ মিনিট কাজ করেছো।", text
     assert source.startswith("llm (gemini/"), source
     assert seen["url"] == ("https://generativelanguage.googleapis.com/v1beta/models/"
-                           "gemini-2.5-flash:generateContent"), seen["url"]
+                           "gemini-3.5-flash-lite:generateContent"), seen["url"]
     assert seen["headers"]["x-goog-api-key"] == "AIzaFakeKey123"
     assert "Secret" not in json.dumps(seen["body"], ensure_ascii=False)
     db.close()
