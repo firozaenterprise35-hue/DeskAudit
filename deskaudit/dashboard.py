@@ -167,10 +167,12 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
     projects = summary["projects"]
     goals_met = sum(1 for p in projects if p.get("goal_met"))
     goals_total = sum(1 for p in projects if p.get("goal_minutes"))
+    # Untagged time is the APP time that has no project. Browser time is
+    # a subset of app time (Chrome is an app), so adding domains on top
+    # would double-count it. (Matches the narrative + report, which use
+    # apps only.)
     untagged_seconds = sum(
         float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", [])
-    ) + sum(
-        float(d.get("seconds", 0)) for d in summary["untagged"].get("domains", [])
     )
     return {
         **summary,
@@ -459,6 +461,7 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self._responded = True
             self.wfile.write(body)
 
         def _send_file(self, path: Path, content_type: str):
@@ -467,12 +470,26 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
+            self._responded = True
             self.wfile.write(data)
 
         def _open_db(self) -> Database:
             return Database(db_path)
 
         def do_GET(self):
+            # Any unexpected error (e.g. a locked database) must answer
+            # 500 JSON, never drop the connection silently — the page
+            # would otherwise sit on "Loading…" forever.
+            try:
+                self._do_GET()
+            except Exception as exc:
+                if not getattr(self, "_responded", False):
+                    try:
+                        self._send_json({"ok": False, "error": str(exc)}, 500)
+                    except Exception:
+                        pass
+
+        def _do_GET(self):
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
             get = lambda k, default=None: (query.get(k) or [default])[0]
@@ -590,6 +607,16 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
             self._send_json({"ok": False, "error": "unknown route"}, 404)
 
         def do_POST(self):
+            try:
+                self._do_POST()
+            except Exception as exc:
+                if not getattr(self, "_responded", False):
+                    try:
+                        self._send_json({"ok": False, "error": str(exc)}, 500)
+                    except Exception:
+                        pass
+
+        def _do_POST(self):
             parsed = urlparse(self.path)
             if parsed.path != "/api/settings":
                 self._send_json({"ok": False, "error": "unknown route"}, 404)

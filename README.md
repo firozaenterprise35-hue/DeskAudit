@@ -271,20 +271,25 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-10.3.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-10.5.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Stop DeskAudit), and can start the
 agent with Windows. Uninstall from Windows Settings like any other app.
 The exe and the installer carry the DeskAudit icon (monitor + magnifier
 + checkmark, `installer/deskaudit.ico`).
+Upgrading: the installer stops a running agent first, so just run the
+new Setup.exe over the old install.
 
-**Background mode — no console window:** the agent runs in the
-background. It hides its own console at startup, so no CMD or
-PowerShell window sits on the desktop while it works. Stop it from the
-Start Menu ("Stop DeskAudit") or with `DeskAudit.exe --stop`.
-One-shot commands (`--report`, `--ai-summary`, ...) still show their
-console, as usual.
+**Background mode — no console window, ever:** the exe is built
+windowed (`console=False`), so Windows never creates a CMD/PowerShell
+window for it — not even the brief flash a console exe shows before
+Python can hide it. The agent runs invisibly in the background; check
+Task Manager for `DeskAudit.exe` to see it is running. Stop it from
+the Start Menu ("Stop DeskAudit") or with `DeskAudit.exe --stop`.
+One-shot commands (`--report`, `--ai-summary`, ...) still work from
+the Python source (`python main.py --ai-summary`); the frozen exe
+writes its output to the log file and the dashboard instead.
 
 **Secret gate — open the dashboard without any window:** click 4 times
 on any empty spot of the desktop, then type `1122` on the keyboard —
@@ -294,17 +299,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v10.3-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v10.5-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.3.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.5.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-10.3.exe`).
+produces the same `installer\Output\DeskAudit-Setup-10.5.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

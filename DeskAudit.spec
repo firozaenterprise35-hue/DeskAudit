@@ -61,7 +61,14 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    # v10.4: windowed build — the exe has NO console at all. The agent
+    # must never show a CMD/black window on the desktop, not even the
+    # brief flash a console exe shows before Python can hide it, so the
+    # console is removed at build time instead of hidden at runtime.
+    # One-shot CLI commands still work from the Python source
+    # (python main.py --ai-summary, ...); the frozen exe writes its
+    # output to the log file and the dashboard instead.
+    console=False,
     icon=ICON_PATH,
 )
 

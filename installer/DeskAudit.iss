@@ -1,12 +1,12 @@
 ; DeskAudit installer — Inno Setup 6 script.
 ; Build the exe first (build_exe.bat), then compile this with:
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\DeskAudit.iss
-; Output: installer\Output\DeskAudit-Setup-10.3.exe
+; Output: installer\Output\DeskAudit-Setup-10.5.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 
 #define MyAppName "DeskAudit"
-#define MyAppVersion "10.3"
+#define MyAppVersion "10.5"
 #define MyAppPublisher "Firoza"
 #define MyAppExeName "DeskAudit.exe"
 
@@ -49,3 +49,17 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--once"; Description: "Run a quick smoke test now"; Flags: postinstall skipifsilent unchecked
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssInstall then
+  begin
+    { Upgrading over a running agent would fail on the locked exe, so
+      stop it first (harmless when it is not running). }
+    Exec('taskkill.exe', '/F /IM DeskAudit.exe', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
+  end;
+end;

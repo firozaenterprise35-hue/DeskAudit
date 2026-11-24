@@ -2,13 +2,13 @@
 ; Build the exe first (build_exe.bat on Windows, or the Wine build),
 ; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
 ;   makensis installer\DeskAudit.nsi
-; Output: installer\Output\DeskAudit-Setup-10.3.exe
+; Output: installer\Output\DeskAudit-Setup-10.5.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "10.3"
+!define APP_VERSION "10.5"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
@@ -48,6 +48,12 @@ VIAddVersionKey "FileVersion" "${APP_VERSION}.0.0"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+Function .onInit
+  ; Upgrading over a running agent would fail on the locked exe, so stop
+  ; it first (harmless when it is not running).
+  ExecWait 'taskkill /F /IM DeskAudit.exe'
+FunctionEnd
+
 Section "${APP_NAME} (required)" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
@@ -72,7 +78,8 @@ Section "Desktop icon" SecDesktop
 SectionEnd
 
 Section "Start DeskAudit when Windows starts" SecStartup
-  ; The agent hides its own console at startup, so no CMD window appears.
+  ; The exe is built windowed (no console at all), so it never shows a
+  ; CMD window — it just runs in the background.
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_NAME}" '"$INSTDIR\${APP_EXE}" --hidden'
 SectionEnd
 

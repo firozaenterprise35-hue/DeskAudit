@@ -241,12 +241,29 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     return 0
 
 
+def _ensure_std_streams() -> None:
+    """Windowed exe (console=False, v10.4) has no console: PyInstaller
+    sets sys.stdout/sys.stderr to None. Point them at devnull so print()
+    and the log StreamHandler never crash — the log file keeps working,
+    and the dashboard shows the same information."""
+    if sys.stdout is None or sys.stderr is None:
+        import os
+
+        devnull = open(os.devnull, "w", encoding="utf-8")
+        if sys.stdout is None:
+            sys.stdout = devnull
+        if sys.stderr is None:
+            sys.stderr = devnull
+
+
 def _fix_console_encoding() -> None:
     """Windows consoles default to cp1252/cp437, which cannot print the
     Bengali daily summary — printing it then crashes with
     UnicodeEncodeError. Switch stdout/stderr to UTF-8 (replacing anything
     still unencodable) so --ai-summary works in any console."""
     for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
@@ -256,10 +273,11 @@ def _fix_console_encoding() -> None:
 def _hide_console() -> None:
     """Hide this process's console window (Windows only, best-effort).
 
-    The agent is meant to run in the background — no CMD/PowerShell
-    window sitting on the desktop. One-shot CLI commands (--report,
-    --ai-summary, ...) keep their console; long-running modes (agent,
-    dashboard) and --hidden hide it. The log file keeps working."""
+    Safety net for running from source (python main.py --hidden): the
+    frozen exe is built windowed (console=False, v10.4), so it has no
+    console window at all and this is a no-op there. One-shot CLI
+    commands run from a real console keep theirs. The log file keeps
+    working either way."""
     if sys.platform != "win32":
         return
     try:
@@ -306,6 +324,7 @@ def _stop_running_agent() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_std_streams()  # windowed exe: stdout/stderr are None
     _fix_console_encoding()
     parser = argparse.ArgumentParser(description="DeskAudit — desktop audit agent")
     parser.add_argument("--report", action="store_true", help="Generate a daily report")

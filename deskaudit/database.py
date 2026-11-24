@@ -137,8 +137,16 @@ class Database:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        try:
+            # WAL lets dashboard reads proceed while the agent writes
+            # (otherwise a write lock can fail a dashboard request).
+            # busy_timeout makes short locks wait instead of erroring.
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=10000")
+        except Exception:
+            pass
         self.conn.executescript(SCHEMA)
         self.conn.commit()
         self._migrate_project_columns()

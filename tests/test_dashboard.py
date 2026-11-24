@@ -237,8 +237,44 @@ def test_dashboard_settings_http():
     print("dashboard settings HTTP tests passed")
 
 
+def test_dashboard_js_syntax():
+    """The dashboard page's <script> must parse. A stray brace once
+    killed the whole script, so the page opened but stayed on
+    "Loading…" forever — and no test caught it. node --check when
+    available, otherwise a brace-balance check (which catches the
+    same class of mistake)."""
+    import shutil
+    import subprocess
+
+    from deskaudit.dashboard import STATIC_DIR
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert "<script>" in html and "</script>" in html
+    js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    assert "function load()" in js and "function render()" in js
+    node = shutil.which("node")
+    if node:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                        encoding="utf-8") as f:
+            f.write(js)
+            js_path = f.name
+        try:
+            proc = subprocess.run([node, "--check", js_path],
+                                  capture_output=True, text=True, timeout=30)
+            assert proc.returncode == 0, proc.stderr
+        finally:
+            Path(js_path).unlink(missing_ok=True)
+    else:
+        # Fallback: braces must balance (the stray-`}` bug was 156 vs 157).
+        assert js.count("{") == js.count("}"), (
+            f"unbalanced braces: {js.count('{')} open vs {js.count('}')} close")
+        assert js.count("(") == js.count(")")
+    print("dashboard JS syntax test passed")
+
+
 if __name__ == "__main__":
     test_dashboard_summary()
     test_dashboard_http()
     test_dashboard_settings()
     test_dashboard_settings_http()
+    test_dashboard_js_syntax()

@@ -186,13 +186,14 @@ async function load(){
   $('expMd').href=`/api/export?date=${d}&format=md`; $('expCsv').href=`/api/export?date=${d}&format=csv`;
   $('expBrowser').href=`/api/export?date=${d}&format=browser`; $('expProjects').href=`/api/export?date=${d}&format=projects`;
   const [s,r,a,n,w]=await Promise.all([
-    fetch(`/api/summary?date=${d}`).then(x=>x.json()),
-    fetch(`/api/range?days=${state.days}&end=${d}`).then(x=>x.json()),
+    fetch(`/api/summary?date=${d}`).then(x=>x.json()).catch(()=>null),
+    fetch(`/api/range?days=${state.days}&end=${d}`).then(x=>x.json()).catch(()=>null),
     fetch(`/api/alerts?date=${d}`).then(x=>x.json()).catch(()=>({alerts:[]})),
     fetch(`/api/narrative?date=${d}`).then(x=>x.json()).catch(()=>null),
     fetch(`/api/weekly?end=${d}&days=7`).then(x=>x.json()).catch(()=>null),
   ]);
-  state.summary=s; state.range=r.rows||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); setStatus('Updated '+new Date().toLocaleTimeString());
+  if(!s){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি — এজেন্ট চালু আছে কি না দেখুন।'); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি। এজেন্ট (DeskAudit) চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
+  state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); setStatus('Updated '+new Date().toLocaleTimeString());
 }
 function renderAlerts(a){
   const list=(a&&a.alerts)||[];
@@ -206,7 +207,6 @@ function renderNarrative(n){
 function renderWeekly(w){
   if(!w){$('weekly').innerHTML='<p class="muted">সাপ্তাহিক রিভিউ পাওয়া যায়নি।</p>';return}
   $('weekly').innerHTML=`<p><b>${esc(w.headline)}</b></p>`+w.sections.map(s=>`<h3>${esc(s.title)}</h3><p>${esc(s.text)}</p>`).join('');
-}
 }
 function render(){
   const s=state.summary; if(!s) return; const k=s.kpis||{};
@@ -250,17 +250,17 @@ function render(){
   $('categoryBars').innerHTML=s.categories.length?s.categories.map(x=>{const v=x.active_seconds||0;const pct=Math.round(100*(v||x.sessions)/maxC);return `<div class="bar-row"><span class="name">${esc(x.category)}</span><span class="track"><span class="fill" style="display:block;width:${pct}%"></span></span><span class="val">${v?fmt(v):x.sessions+' visits'}</span></div>`}).join(''):'<p class="muted">No categories.</p>';
   const maxF=Math.max(1,...s.file_types.map(x=>x.count));
   $('fileBars').innerHTML=s.file_types.length?s.file_types.map(x=>barRow(x.event, x.count, maxF, 'amber', String(x.count))).join(''):'<p class="muted">No file events.</p>';
-  // Trend
+  // Trend (top project per day comes from the range API)
   const maxT=Math.max(1,...state.range.map(x=>x.active_seconds));
-  $('trendBars').innerHTML=state.range.map(x=>{const pct=Math.round(100*x.active_seconds/maxT);return `<div class="bar-row"><span class="name">${esc(x.date)}</span><span class="track"><span class="fill green" style="display:block;width:${pct}%"></span></span><span class="val">${fmt(x.active_seconds)}</span></div>`}).join('');
-  $('trendNote').textContent=`Last ${state.days} days ending ${state.date}. Top project per day is shown in the table below via the API.`;
+  $('trendBars').innerHTML=state.range.map(x=>{const pct=Math.round(100*x.active_seconds/maxT);return `<div class="bar-row" title="Top project: ${esc(x.top_project||'—')}"><span class="name">${esc(x.date)}</span><span class="track"><span class="fill green" style="display:block;width:${pct}%"></span></span><span class="val">${fmt(x.active_seconds)}</span></div>`}).join('');
+  $('trendNote').textContent=`Last ${state.days} days ending ${state.date}. Hover a row to see that day's top project.`;
   // Domain table
   $('domainTable').innerHTML=s.browser.top_domains.map(x=>`<tr><td>${esc(x.domain)}</td><td>${esc(x.category)}</td><td>${x.active_seconds?fmt(x.active_seconds):x.sessions+' visits'}</td><td>${x.sessions}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No browser domains.</td></tr>';
   $('searchList').innerHTML=s.browser.searches.length?s.browser.searches.map(x=>`<div>“${esc(x.query)}” <span class="muted">×${x.count}</span></div>`).join(''):'<p class="muted">No searches.</p>';
   $('downloadList').innerHTML=s.browser.downloads.length?s.browser.downloads.map(x=>`<div>${esc(x.browser)}: ${esc(x.file)} <span class="badge">${esc(x.state)}</span></div>`).join(''):'<p class="muted">No downloads.</p>';
   $('fileTable').innerHTML=s.recent_files.length?s.recent_files.map(x=>`<tr><td>${esc(x.at)}</td><td>${esc(x.event)}</td><td>${esc(x.path)}${x.dest?' → '+esc(x.dest):''}</td><td>${esc(x.project)}</td></tr>`).join(''):'<tr><td colspan="4" class="muted">No file events.</td></tr>';
   const u=s.untagged||{};
-  $('untaggedList').innerHTML=[...(u.apps||[]).map(x=>`<div>App: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.domains||[]).map(x=>`<div>Domain: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.titles||[]).map(x=>`<div>Title: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`)].join('')||'<p class="muted">Nothing untagged. Nice.</p>';
+  $('untaggedList').innerHTML=[...(u.apps||[]).map(x=>`<div>App: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.domains||[]).map(x=>`<div>Domain: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`),...(u.folders||[]).map(x=>`<div>Folder: <b>${esc(x.value)}</b> — ${x.count} file event(s)</div>`),...(u.titles||[]).map(x=>`<div>Title: <b>${esc(x.value)}</b> — ${fmt(x.seconds)}</div>`)].join('')||'<p class="muted">Nothing untagged. Nice.</p>';
 }
 function renderProjectTable(){
   const s=state.summary; if(!s) return;
@@ -315,7 +315,9 @@ async function loadSettings(){
 }
 async function saveSettings(){
   const num=id=>{const v=parseInt($(id).value,10); return Number.isFinite(v)?v:null};
-  const updates={llm:{provider:$('set_llm_provider').value,model:$('set_llm_model').value.trim()},agent:{},alerts:{},backup:{}};
+  const updates={llm:{provider:$('set_llm_provider').value},agent:{},alerts:{},backup:{}};
+  const model=$('set_llm_model').value.trim();
+  if(model) updates.llm.model=model;  // empty model must not be sent (the API rejects it)
   const key=$('set_llm_api_key').value.trim();
   if($('set_llm_clear_key').checked) updates.llm.api_key='';
   else if(key) updates.llm.api_key=key;
