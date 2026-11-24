@@ -40,7 +40,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+def _app_dir() -> Path:
+    """Folder holding the app: the exe's folder when frozen by PyInstaller
+    (DeskAudit.exe), otherwise the folder holding main.py."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+sys.path.insert(0, str(_app_dir()))
 
 from deskaudit.app_tracker import AppTracker
 from deskaudit.browser_receiver import BrowserReceiver
@@ -250,7 +258,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args(argv)
 
-    config = Config.load(args.config)
+    # Frozen exe: the default config.yaml lives next to DeskAudit.exe,
+    # not in whatever folder the shortcut was launched from.
+    config_path = args.config
+    if getattr(sys, "frozen", False) and config_path == "config.yaml":
+        config_path = str(_app_dir() / "config.yaml")
+    config = Config.load(config_path)
     log = setup_logging(config.log_path)
     tagger = load_tagger(config)
 
@@ -333,8 +346,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         import subprocess
 
-        py = sys.executable
-        cmd = (f'"{py}" "{Path(config.project_root) / "main.py"}" --evening-job')
+        if getattr(sys, "frozen", False):
+            cmd = f'"{sys.executable}" --evening-job'
+        else:
+            cmd = (f'"{sys.executable}" "{Path(config.project_root) / "main.py"}" '
+                   f"--evening-job")
         r = subprocess.run(["schtasks", "/create", "/tn", "DeskAudit Daily Summary",
                             "/tr", cmd, "/sc", "daily", "/st", "21:00", "/f"],
                            capture_output=True, text=True)

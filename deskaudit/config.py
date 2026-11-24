@@ -74,6 +74,25 @@ class Config:
                     raw = yaml.safe_load(f) or {}
             except Exception:
                 raw = {}
+        # config.local.yaml (same folder, git-ignored) overrides config.yaml.
+        # This is where secrets belong — e.g. llm.api_key — because
+        # config.yaml is tracked by git and config.local.yaml is not.
+        # Nested sections (llm, alerts) merge key-by-key, so a local
+        # llm.api_key does not wipe the other llm settings.
+        local_path = cfg_path.with_name("config.local.yaml")
+        if local_path.exists():
+            try:
+                import yaml  # type: ignore
+
+                with local_path.open(encoding="utf-8") as f:
+                    local = yaml.safe_load(f) or {}
+                for key, value in local.items():
+                    if isinstance(value, dict) and isinstance(raw.get(key), dict):
+                        raw[key] = {**raw[key], **value}
+                    else:
+                        raw[key] = value
+            except Exception:
+                pass
         merged = {**DEFAULTS, **raw}
         root = cfg_path.resolve().parent if cfg_path.exists() else Path(".").resolve()
         return cls(

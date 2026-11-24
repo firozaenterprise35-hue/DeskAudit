@@ -267,6 +267,33 @@ Stop with `Ctrl+C`. The current app session is closed cleanly on exit.
 Pause tracking any time by creating an empty file named `PAUSE` in the
 project folder, and delete it to resume. Useful for private work.
 
+## Windows .exe & installer (no Python needed)
+
+**Easiest:** download `DeskAudit-Setup-10.0.exe` from the
+[GitHub Release v10.0](https://github.com/firozaenterprise35-hue/DeskAudit/releases/tag/v10.0)
+and double-click it. It installs per-user to `%LOCALAPPDATA%\DeskAudit`
+(no admin needed), adds Start Menu shortcuts (DeskAudit, DeskAudit
+Dashboard), and can start the agent with Windows. Uninstall from
+Windows Settings like any other app.
+
+**Portable:** unzip `DeskAudit-v10.zip` and double-click `run.bat`
+(Python still needed) — or run `dist\DeskAudit\DeskAudit.exe` from a
+built copy.
+
+**Build it yourself on Windows:**
+```bat
+build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-10.0.exe (needs Inno Setup 6)
+```
+Every push to `main` also builds both files automatically with
+GitHub Actions (`.github/workflows/build-windows.yml`) and attaches
+them to Release v10.0.
+
+The exe finds its own `config.yaml` next to itself, so shortcuts and
+the 9pm scheduled task work from any folder. `config.local.yaml`
+(same folder, git-ignored) overrides `config.yaml` — put the Gemini
+API key there, never in `config.yaml`.
+
 ## Version history (git) & rollback
 
 The project is a git repository (`main` branch). No remote is set yet —
