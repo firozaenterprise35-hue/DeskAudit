@@ -75,12 +75,17 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
 (async () => {
   eval(script + '\n;globalThis.__t = { load, loadSettings, saveSettings, state, $ };');
   const t = globalThis.__t;
-  t.state.date = seedDate;   // deterministic: the seeded day
-  await t.load();
-  await t.loadSettings();
   const out = [];
   const check = (name, ok, extra = '') =>
     out.push((ok ? 'PASS ' : 'FAIL ') + name + (extra ? ' — ' + extra : ''));
+  // Default date must be the LOCAL date, not UTC (in Asia/Dhaka the UTC
+  // date is yesterday between 00:00 and 06:00 local).
+  const now = new Date();
+  const localToday = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  check('default date is local (not UTC)', t.state.date === localToday, t.state.date);
+  t.state.date = seedDate;   // deterministic: the seeded day
+  await t.load();
+  await t.loadSettings();
   const kpis = t.$('kpis').innerHTML;
   check('14 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 14,
     (kpis.match(/class="kpi"/g) || []).length + ' found');
@@ -115,6 +120,23 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
     t.$('expMd').href.includes('/api/export?date=') && t.$('expCsv').href.includes('format=csv'));
   await t.saveSettings();
   check('settings save reports Saved', t.$('setStatus').textContent.includes('Saved'));
+  // Save is only enabled after settings loaded successfully: with the
+  // flag reset it must refuse instead of sending unchecked checkboxes.
+  t.state.settingsLoaded = false;
+  await t.saveSettings();
+  check('save refuses before settings load', t.$('setStatus').textContent.includes('not loaded yet'));
+  t.state.settingsLoaded = true;
+  // Error JSON from the summary API must show the error, not render a
+  // broken page ("undefined%" KPIs, blank tables, stuck "Loading…").
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (url, opts) => url.includes('/api/summary')
+    ? Promise.resolve({ json: async () => ({ error: 'boom' }) })
+    : origFetch(url, opts);
+  await t.load();
+  check('error JSON shows error status', t.$('status').textContent.includes('boom'), t.$('status').textContent);
+  check('error JSON shows error in glance', t.$('glance').innerHTML.includes('boom'));
+  globalThis.fetch = origFetch;
+  await t.load();
   console.log(out.join('\n'));
   if (out.some(l => l.startsWith('FAIL'))) process.exit(1);
   console.log('DASHBOARD JS E2E PASS');

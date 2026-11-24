@@ -29,11 +29,11 @@ from pathlib import Path
 
 from .browser_history import (
     discover_profiles,
+    read_profile_bookmarks,
     read_profile_downloads,
     read_profile_history,
 )
 from .browser_utils import (
-    base_domain,
     browser_for_exe,
     classify_domain,
     clean_window_title,
@@ -60,6 +60,11 @@ class BrowserTracker:
         self._active = 0.0
         self._idle = 0.0
         self._tab_switches = 0
+        # Last tab reported by the extension (browser, url, title, at).
+        # tick() uses it for the exact URL — the receiver itself must NOT
+        # open a session, or every extension report creates a spurious
+        # ~0 s session row even when Chrome is not the foreground app.
+        self._extension_tab: dict | None = None
 
     # -- history ------------------------------------------------------
     @property
@@ -169,7 +174,8 @@ class BrowserTracker:
     def record_extension_tab(self, browser: str, url: str, title: str,
                              at: datetime | None = None) -> None:
         """Called by browser_receiver.py when the extension reports a tab.
-        Treated as a visit (deduped) and as the current active session."""
+        Treated as a visit (deduped); the exact URL is kept for tick()
+        to use when this browser IS the foreground app."""
         at = at or datetime.now().astimezone()
         from .browser_utils import redact_url
 
@@ -184,8 +190,8 @@ class BrowserTracker:
             if query:
                 self.db.log_browser_search(browser, query, url, domain, at,
                                            project=project, tags=tags)
-        # Feed the session tracker with the exact URL.
-        self._session_from_url(browser, url, title, at)
+        self._extension_tab = {"browser": browser, "url": url,
+                               "title": title, "at": at}
 
     # -- active session (foreground window) ----------------------------
     def _session_from_url(self, browser: str, url: str, title: str, now: datetime) -> None:
@@ -220,11 +226,22 @@ class BrowserTracker:
         browser, _engine = browser_for_exe(exe) or ("Browser", "chromium")
         title = clean_window_title(getattr(window, "title", "") or "")
 
-        # 1) Exact URL if CDP is available.
+        # 0) Exact URL from the extension, when it is for THIS browser
+        # and fresh (reported within the last 2 minutes).
         url = ""
-        cdp = self.cdp_active_tab()
-        if cdp and (not title or cdp.get("title", "")[:60] in title or title[:60] in cdp.get("title", "")):
-            url = cdp["url"]
+        ext = self._extension_tab
+        if ext and ext.get("browser") == browser:
+            try:
+                fresh = (now - ext["at"]).total_seconds() < 120
+            except Exception:
+                fresh = False
+            if fresh:
+                url = ext.get("url") or ""
+        # 1) Exact URL if CDP is available.
+        if not url:
+            cdp = self.cdp_active_tab()
+            if cdp and (not title or cdp.get("title", "")[:60] in title or title[:60] in cdp.get("title", "")):
+                url = cdp["url"]
         # 2) Otherwise match the title to the most recent visit.
         if not url:
             url = self.db.latest_url_for_title(browser, title)
@@ -250,8 +267,24 @@ class BrowserTracker:
             self._idle += poll_interval
         else:
             self._active += poll_interval
+        self.flush(now)
         return {"browser": browser, "title": title, "url": url,
                 "domain": domain_of(url) if url else ""}
+
+    def flush(self, now: datetime | None = None) -> None:
+        """Write the open browser session's durations into the DB without
+        closing it (same reason as AppTracker.flush: a force-stop must
+        not lose the whole current session)."""
+        if self._session_id is None or self._started_at is None:
+            return
+        now = now or datetime.now().astimezone()
+        duration = (now - self._started_at).total_seconds()
+        try:
+            self.db.update_browser_session(
+                self._session_id, now, duration, self._active, self._idle,
+                self._tab_switches)
+        except Exception:
+            pass
 
     def note_tab_switch(self) -> None:
         self._tab_switches += 1
@@ -277,10 +310,15 @@ class BrowserTracker:
     # -- one-off audit --------------------------------------------------
     def audit_now(self) -> dict:
         """Import all history (no `since` filter) — for --browser-audit."""
-        counts = {"visits": 0, "downloads": 0, "searches": 0, "profiles": 0}
+        counts = {"visits": 0, "downloads": 0, "searches": 0,
+                  "profiles": 0, "bookmarks": 0}
         for profile in self.profiles:
             counts["profiles"] += 1
-            for visit in read_profile_history(profile, None):
+            try:
+                visits = read_profile_history(profile, None)
+            except Exception:
+                visits = []
+            for visit in visits:
                 if self._is_excluded_domain(visit.domain):
                     continue
                 project, tags = self._tag(visit.url, visit.domain, visit.title,
@@ -302,13 +340,22 @@ class BrowserTracker:
                     f"browser_last_seen:{profile.browser}:{profile.profile_name}",
                     visit.visited_at.isoformat(),
                 )
-            for dl in read_profile_downloads(profile, None):
-                project, tags = (self.tagger.tag_download(dl.url, dl.domain, dl.file_path)
-                                 if self.tagger is not None else ("Untagged", []))
-                if self.db.log_browser_download(
-                    dl.browser, dl.url, dl.domain, dl.file_path, dl.file_name,
-                    dl.total_bytes, dl.received_bytes, dl.state, dl.started_at,
-                    project=project, tags=tags,
-                ):
-                    counts["downloads"] += 1
+            if getattr(self.config, "track_downloads", True):
+                try:
+                    downloads = read_profile_downloads(profile, None)
+                except Exception:
+                    downloads = []
+                for dl in downloads:
+                    project, tags = (self.tagger.tag_download(dl.url, dl.domain, dl.file_path)
+                                     if self.tagger is not None else ("Untagged", []))
+                    if self.db.log_browser_download(
+                        dl.browser, dl.url, dl.domain, dl.file_path, dl.file_name,
+                        dl.total_bytes, dl.received_bytes, dl.state, dl.started_at,
+                        project=project, tags=tags,
+                    ):
+                        counts["downloads"] += 1
+            try:
+                counts["bookmarks"] += len(read_profile_bookmarks(profile))
+            except Exception:
+                pass
         return counts

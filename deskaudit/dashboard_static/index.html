@@ -170,6 +170,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_transfers_enabled" type="checkbox"> Data Transfer Monitor চালু</label>
       <label><span>Scan interval (seconds, 10–600)</span><input id="set_transfers_poll_seconds" type="number" min="10" max="600"></label>
       <label><span>গুরুত্বপূর্ণ ফোল্ডার (কমা দিয়ে আলাদা করুন)</span><input id="set_transfers_sensitive_folders" type="text" placeholder="%USERPROFILE%/Documents/CompanyData"></label>
+      <label><span>Cloud session min seconds to log (0–3600)</span><input id="set_transfers_cloud_min_seconds" type="number" min="0" max="3600"></label>
+      <label><span>Email / message session min seconds to log (0–3600)</span><input id="set_transfers_communication_min_seconds" type="number" min="0" max="3600"></label>
       <label><span>Cloud alert minutes per day (1–1440)</span><input id="set_transfers_cloud_alert_minutes" type="number" min="1" max="1440"></label>
       <label><span>Email / message alert minutes (1–1440)</span><input id="set_transfers_communication_alert_minutes" type="number" min="1" max="1440"></label>
       <label><span>Large transfer MB (1–100000)</span><input id="set_transfers_large_transfer_mb" type="number" min="1" max="100000"></label>
@@ -183,15 +185,15 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><span>Keep count (1–1000)</span><input id="set_backup_keep_count" type="number" min="1" max="1000"></label>
       <label><input id="set_backup_on_start" type="checkbox"> Backup on agent start</label>
     </div>
-    <button id="saveSettingsBtn">💾 Save settings</button><span id="setStatus"></span>
+    <button id="saveSettingsBtn" disabled>💾 Save settings</button><span id="setStatus">Loading settings…</span>
   </section>
 </main>
 <footer>DeskAudit dashboard · served from 127.0.0.1 only · <span id="footDate"></span></footer>
 <script>
 const $=id=>document.getElementById(id);
-let state={date:new Date().toISOString().slice(0,10),days:7,summary:null,range:[]};
+function localDate(d){d=d||new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())}
+let state={date:localDate(),days:7,summary:null,range:[],settingsLoaded:false};
 function fmt(s){s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);if(h)return h+'h '+m+'m';if(m)return m+'m';return s+'s'}
-function fmtMin(m){return fmt((m||0)*60)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function barRow(name,val,max,cls,display){const pct=max?Math.round(100*Number(val)/Number(max)):0;return `<div class="bar-row"><span class="name" title="${esc(name)}">${esc(name)}</span><span class="track"><span class="fill ${cls||''}" style="display:block;width:${pct}%"></span></span><span class="val">${esc(display!==undefined?display:val)}</span></div>`}
 function setStatus(t){$('status').textContent=t}
@@ -209,9 +211,11 @@ async function load(){
     fetch(`/api/weekly?end=${d}&days=7`).then(x=>x.json()).catch(()=>null),
   ]);
   if(!s){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি — এজেন্ট চালু আছে কি না দেখুন।'); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি। এজেন্ট (DeskAudit) চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
+  if(s.error){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি: '+s.error); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি: '+esc(s.error)+' — এজেন্ট চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
   state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); renderTransfers(s.transfers); setStatus('Updated '+new Date().toLocaleTimeString());
 }
 function renderAlerts(a){
+  if(a&&a.error){ $('alertCount').textContent='!'; $('alertList').innerHTML='<p class="muted">অ্যালার্ট লোড হয়নি: '+esc(a.error)+'</p>'; return; }
   const list=(a&&a.alerts)||[];
   $('alertCount').textContent=list.length?list.length+'টি':'কিছু নেই';
   $('alertList').innerHTML=list.length?list.map(x=>`<div style="margin:6px 0"><span class="badge ${x.severity==='critical'?'red':x.severity==='warning'?'amber':'green'}">${esc(x.severity)}</span> <b>${esc(x.title)}</b><div class="muted">${esc(x.message)}</div></div>`).join(''):'<p class="muted">আজ কোনো অ্যালার্ট নেই।</p>';
@@ -228,10 +232,12 @@ function renderTransfers(t){
 }
 function renderNarrative(n){
   if(!n){$('narrative').innerHTML='<p class="muted">সামারি পাওয়া যায়নি।</p>';return}
+  if(n.error){$('narrative').innerHTML='<p class="muted">সামারি লোড হয়নি: '+esc(n.error)+'</p>';return}
   $('narrative').innerHTML=`<p><b>${esc(n.headline)}</b></p>`+n.sections.map(s=>`<h3>${esc(s.title)}</h3><p>${esc(s.text)}</p>`).join('');
 }
 function renderWeekly(w){
   if(!w){$('weekly').innerHTML='<p class="muted">সাপ্তাহিক রিভিউ পাওয়া যায়নি।</p>';return}
+  if(w.error){$('weekly').innerHTML='<p class="muted">সাপ্তাহিক রিভিউ লোড হয়নি: '+esc(w.error)+'</p>';return}
   $('weekly').innerHTML=`<p><b>${esc(w.headline)}</b></p>`+w.sections.map(s=>`<h3>${esc(s.title)}</h3><p>${esc(s.text)}</p>`).join('');
 }
 function render(){
@@ -302,17 +308,17 @@ function renderAppTable(){
   const rows=(s.app_details||[]).filter(x=>!q||(x.app+' '+x.title+' '+x.project).toLowerCase().includes(q));
   $('appTable').innerHTML=rows.map(x=>`<tr><td>${esc(x.app)}</td><td>${esc(x.title)}</td><td>${esc(x.project)}</td><td>${fmt(x.active_seconds)}</td><td>${x.sessions}</td></tr>`).join('')||'<tr><td colspan="5" class="muted">No apps match.</td></tr>';
 }
-function shift(days){const d=new Date(state.date+'T12:00:00');d.setDate(d.getDate()+days);state.date=d.toISOString().slice(0,10);load()}
+function shift(days){const d=new Date(state.date+'T12:00:00');d.setDate(d.getDate()+days);state.date=localDate(d);load()}
 $('prevBtn').onclick=()=>shift(-1); $('nextBtn').onclick=()=>shift(1);
-$('todayBtn').onclick=()=>{state.date=new Date().toISOString().slice(0,10);load()};
+$('todayBtn').onclick=()=>{state.date=localDate();load()};
 $('dateInput').onchange=e=>{state.date=e.target.value;load()};
 $('refreshBtn').onclick=load;
 document.querySelectorAll('.rangeBtn').forEach(b=>b.onclick=()=>{document.querySelectorAll('.rangeBtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.days=+b.dataset.days;load()});
 $('projectFilter').onchange=renderProjectTable; $('projectSearch').oninput=renderProjectTable; $('appSearch').oninput=renderAppTable;
 let timer=null; $('autoRefresh').onchange=e=>{clearInterval(timer);if(e.target.checked)timer=setInterval(load,30000)};
 async function loadSettings(){
-  let s; try{ s=await fetch('/api/settings').then(x=>x.json()); }catch(e){ $('setStatus').textContent='Settings unavailable.'; return; }
-  if(!s||s.error){ $('setStatus').textContent='Settings unavailable.'; return; }
+  let s; try{ s=await fetch('/api/settings').then(x=>x.json()); }catch(e){ $('setStatus').textContent='Settings unavailable — Save is disabled until they load.'; return; }
+  if(!s||s.error){ $('setStatus').textContent='Settings unavailable — Save is disabled until they load.'; return; }
   $('set_llm_provider').value=s.llm.provider||'gemini';
   $('set_llm_model').value=s.llm.model||'';
   $('keyStatus').textContent=s.llm.api_key_set?'(চাবি সেট করা আছে'+(s.llm.api_key_source==='env'?' — env var থেকে':'')+')':'(চাবি সেট করা নেই)';
@@ -344,6 +350,8 @@ async function loadSettings(){
     setChk('set_transfers_enabled',s.transfers.enabled);
     setNum('set_transfers_poll_seconds',s.transfers.poll_seconds);
     $('set_transfers_sensitive_folders').value=(s.transfers.sensitive_folders||[]).join(', ');
+    setNum('set_transfers_cloud_min_seconds',s.transfers.cloud_min_seconds);
+    setNum('set_transfers_communication_min_seconds',s.transfers.communication_min_seconds);
     setNum('set_transfers_cloud_alert_minutes',s.transfers.cloud_alert_minutes);
     setNum('set_transfers_communication_alert_minutes',s.transfers.communication_alert_minutes);
     setNum('set_transfers_large_transfer_mb',s.transfers.large_transfer_mb);
@@ -351,8 +359,15 @@ async function loadSettings(){
     setChk('set_transfers_print_alert',s.transfers.print_alert);
     setChk('set_transfers_sensitive_copy_alert',s.transfers.sensitive_copy_alert);
   }
+  // Loaded successfully — only now is Save safe: before this, every
+  // checkbox reads as unchecked and a save would silently disable
+  // browser tracking, alerts and the transfer monitor.
+  state.settingsLoaded=true;
+  $('saveSettingsBtn').disabled=false;
+  $('setStatus').textContent='';
 }
 async function saveSettings(){
+  if(!state.settingsLoaded){ $('setStatus').textContent='Settings have not loaded yet — please wait.'; return; }
   const num=id=>{const v=parseInt($(id).value,10); return Number.isFinite(v)?v:null};
   const updates={llm:{provider:$('set_llm_provider').value},agent:{},alerts:{},backup:{}};
   const model=$('set_llm_model').value.trim();
@@ -367,7 +382,7 @@ async function saveSettings(){
   const backupInts={backup_keep_days:'set_backup_keep_days',backup_keep_count:'set_backup_keep_count'};
   for(const [k,id] of Object.entries(backupInts)){const v=num(id); if(v!==null) updates.backup[k]=v}
   updates.transfers={enabled:$('set_transfers_enabled').checked,usb_alert:$('set_transfers_usb_alert').checked,print_alert:$('set_transfers_print_alert').checked,sensitive_copy_alert:$('set_transfers_sensitive_copy_alert').checked};
-  const trInts={poll_seconds:'set_transfers_poll_seconds',cloud_alert_minutes:'set_transfers_cloud_alert_minutes',communication_alert_minutes:'set_transfers_communication_alert_minutes',large_transfer_mb:'set_transfers_large_transfer_mb'};
+  const trInts={poll_seconds:'set_transfers_poll_seconds',cloud_min_seconds:'set_transfers_cloud_min_seconds',communication_min_seconds:'set_transfers_communication_min_seconds',cloud_alert_minutes:'set_transfers_cloud_alert_minutes',communication_alert_minutes:'set_transfers_communication_alert_minutes',large_transfer_mb:'set_transfers_large_transfer_mb'};
   for(const [k,id] of Object.entries(trInts)){const v=num(id); if(v!==null) updates.transfers[k]=v}
   updates.transfers.sensitive_folders=$('set_transfers_sensitive_folders').value;
   updates.agent.browser_enabled=$('set_browser_enabled').checked;

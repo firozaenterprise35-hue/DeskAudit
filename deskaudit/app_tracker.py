@@ -86,6 +86,22 @@ class AppTracker:
         self._active = 0.0
         self._idle = 0.0
 
+    def flush(self, now: datetime | None = None) -> None:
+        """Write the open session's accumulated durations into the DB
+        without closing it. Called every poll: if the agent is force-
+        stopped, the PC reboots, or the process crashes, the current
+        session keeps everything up to the last poll instead of losing
+        the whole stretch (durations used to live only in memory)."""
+        if self._session_id is None or self._started_at is None:
+            return
+        now = now or datetime.now().astimezone()
+        duration = (now - self._started_at).total_seconds()
+        try:
+            self.db.update_app_session(self._session_id, now, duration,
+                                       self._active, self._idle)
+        except Exception:
+            pass
+
     def tick(self, poll_interval: float = 5.0) -> ActiveWindow:
         """One poll. Returns the current foreground window."""
         now = datetime.now().astimezone()
@@ -114,6 +130,7 @@ class AppTracker:
             self._idle += poll_interval
         else:
             self._active += poll_interval
+        self.flush(now)
         return window
 
     def stop(self) -> None:

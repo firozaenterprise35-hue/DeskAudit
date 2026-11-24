@@ -21,5 +21,5 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo.
-echo Done. Installer: installer\Output\DeskAudit-Setup-10.0.exe
+echo Done. Installer: installer\Output\DeskAudit-Setup-11.1.exe
 pause

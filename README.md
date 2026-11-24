@@ -24,8 +24,9 @@ event type, and timestamps.
 - **Local storage** — everything goes to SQLite at `data/deskaudit.db`.
   No cloud upload, no account, no telemetry.
 - **Daily report** — `python main.py --report` prints a summary and writes
-  `reports/YYYY-MM-DD.md`, `reports/YYYY-MM-DD.csv` and
-  `reports/YYYY-MM-DD-browser.csv`.
+  `reports/YYYY-MM-DD.md`, `reports/YYYY-MM-DD.csv`,
+  `reports/YYYY-MM-DD-browser.csv`, `reports/YYYY-MM-DD-projects.csv`
+  and `reports/YYYY-MM-DD-transfers.csv`.
 
 ## Browser tracking — everything it covers
 
@@ -41,7 +42,7 @@ polls browser history every `browser_poll_seconds` (default 60s).
 | Domain + category | 60+ built-in domains (coding, work, email, learning, search, social, video, shopping, news) + your `productive_domains` / `distracting_domains` in `config.yaml` | `category`, `is_productive` |
 | Time per domain | Productive vs distracting time, domains used, top domains | daily report |
 | Search queries | Extracted from the URL: Google/Bing/DuckDuckGo `q=`, Yahoo `p=`, YouTube `search_query=`, Brave/Ecosia `q=`, Baidu `wd`, Yandex `text` | `browser_searches` |
-| Downloads | Chromium `downloads` table: file name, path, size, state (complete / cancelled / interrupted) | `browser_downloads` |
+| Downloads | Chromium `downloads` table: file name, path, size, state (complete / cancelled / interrupted). Firefox downloads are not tracked (Firefox does not keep them in places.sqlite in a stable form). | `browser_downloads` |
 | Tab switches | Counted when the foreground browser title changes to another tab | `browser_sessions.tab_switches` |
 | Bookmarks | Chromium `Bookmarks` JSON + Firefox `moz_bookmarks` (reader functions, used by `--browser-audit` tooling) | `browser_history.read_*_bookmarks()` |
 | Dedup | `UNIQUE(browser, url, visited_at)` + a per-profile last-seen watermark in `kv_state`, so re-running never double-counts | — |
@@ -115,7 +116,7 @@ offline. All data comes from `data/deskaudit.db` on this computer.
 | Section | What you see |
 |---|---|
 | Header | Date picker, Prev / Next day, Today, trend range 7 / 14 / 30 days, Refresh, Auto-refresh 30s, Export (Markdown, Apps CSV, Browser CSV, Projects CSV) |
-| KPI cards (12) | Active, Idle, Apps used, Browser time, Productive, Distracting, Projects worked, File events, Visits, Searches, Downloads, Untagged time — each with its sub-note (%, goals met, …) |
+| KPI cards (14) | Active, Idle, Apps used, Browser time, Productive, Distracting, Projects worked, File events, Visits, Searches, Downloads, Untagged time — each with its sub-note (%, goals met, …) |
 | Today at a glance | One sentence: active / idle, apps, browser productive vs distracting, projects worked |
 | Hourly activity | Bar chart, 0–23h, active minutes per hour (browser is a subset, never added on top; hover shows browser minutes) |
 | Productive vs distracting | Donut chart with % + legend |
@@ -131,15 +132,15 @@ offline. All data comes from `data/deskaudit.db` on this computer.
 | Recent file events | Last 20: when, event, path, project |
 | Untagged | Top untagged apps / domains / titles, with a hint to add a rule + `--retag` |
 | Alerts | Today's alerts with severity badges (🔴 critical / 🟡 warning / 🔵 info) |
-| Daily summary | Bengali narrative for the day, all 7 sections |
+| Daily summary | Bengali narrative for the day, all 8 sections (incl. Data transfers) |
 | Weekly review | 7-day review: totals, best / weakest day, top project, trend |
-| ⚙️ Settings | AI (LLM) provider / model / API key, agent, alerts and backup settings — saved to `config.local.yaml` (`config.yaml` is never changed, the key is never shown back). Restart the agent and dashboard to apply. |
+| ⚙️ Settings | AI (LLM) provider / model / API key, agent, secret gate, alerts, backup and Data Transfer settings — saved to `config.local.yaml` (`config.yaml` is never changed, the key is never shown back). Restart the agent and dashboard to apply. |
 
 API (JSON, local only): `GET /api/health`, `/api/summary?date=YYYY-MM-DD`,
 `/api/range?days=7&end=YYYY-MM-DD`, `/api/alerts?date=YYYY-MM-DD`,
 `/api/narrative?date=YYYY-MM-DD`, `/api/weekly?end=YYYY-MM-DD&days=7`,
-`/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects`,
-`GET /api/settings`, `POST /api/settings`.
+`/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects|transfers`,
+`/api/transfers?date=YYYY-MM-DD`, `GET /api/settings`, `POST /api/settings`.
 
 Options: `python main.py --dashboard --port 8001 --host 127.0.0.1 --no-open`.
 Do not use `--host 0.0.0.0` on an untrusted network — the page shows
@@ -204,13 +205,13 @@ python main.py --transfers --date 2026-11-23
 
 | Channel | What is detected |
 |---|---|
-| **USB / pen drive** | Drive inserted, files copied onto it (snapshot diff), drive removed |
+| **USB / pen drive** | Drive inserted, files copied onto it (snapshot diff), drive removed. Pen drives and memory cards — external USB hard drives that Windows reports as fixed drives are not detected. |
 | **Cloud upload** | Sessions on drive.google.com, OneDrive, Dropbox, Box, MEGA, MediaFire, WeTransfer, SendSpace, file.io, pCloud, iCloud, … (a session under 60 s is not logged) |
 | **Email** | Gmail, Outlook, Yahoo mail, Proton, Zoho (channel used + duration) |
 | **Messaging** | WhatsApp Web, Telegram Web, Messenger, Teams, Slack, Discord, Skype |
-| **Printing** | Every print job from the Windows spooler: document name, pages, printer |
+| **Printing** | Print jobs seen in the Windows spooler (polled every 60 s — a job that prints and finishes between two polls is missed): document name, pages, printer |
 | **Sensitive folders** | A file moved/copied OUT of a folder you mark in `transfers.sensitive_folders` — e.g. `%USERPROFILE%/Documents/CompanyData` |
-| **Large transfers** | Any single file move over `large_transfer_mb` (default 100 MB) |
+| **Large transfers** | Any single file move or copy over `large_transfer_mb` (default 100 MB) |
 
 Everything is shown on the dashboard (🔒 ডেটা ট্রান্সফার section + two
 KPI cards + `/api/transfers?date=...`), in the daily report
@@ -226,7 +227,9 @@ DeskAudit is metadata-only, by design, from day one.
 **Making transfers harder, not just visible:** run
 `usb_write_protect.bat` (as administrator) to block WRITING to USB
 drives on that PC — reading still works, and the agent still logs every
-USB insert and copy attempt. Run `usb_write_allow.bat` to undo it.
+USB insert. A copy that the write-block stops leaves no file event,
+so a *blocked* attempt itself is not logged. Run `usb_write_allow.bat`
+to undo it.
 This does not block phones (MTP) or cloud uploads — those are caught
 and logged by the monitor instead. Staff should be told that office
 computers are monitored.
@@ -257,14 +260,15 @@ modified / deleted / moved), ব্রাউজার (top searches, downloads, 
 50% of the day, goal < 50%, 5+ deletions, untagged time).
 
 Weekly review sections: মোট হিসাব (total / average active, idle, browser,
-visits, files), সেরা ও দুর্বল দিন, টপ প্রজেক্ট, ট্রেন্ড (second half vs
-first half), আগামী সপ্তাহের জন্য — plus a day-by-day table.
+visits, files), সেরা ও দুর্বল দিন, টপ প্রজেক্ট, ডেটা ট্রান্সফার (weekly
+transfer counts), ট্রেন্ড (second half vs first half), আগামী সপ্তাহের
+জন্য — plus a day-by-day table.
 
 Both appear on the dashboard too (Daily Summary and Weekly Review
 sections, `/api/narrative?date=...` and `/api/weekly?end=...&days=7`).
-If you later want real LLM-written text instead of the local narrative,
-tell me and I can add an optional LLM variant that needs an API key you
-provide — the local version stays the default.
+An optional LLM-written version exists too — see "LLM-written summary
+(optional)" below (Gemini, OpenAI or Anthropic, needs a key you
+provide). The local version stays the default.
 
 ## Folder structure
 
@@ -272,9 +276,16 @@ provide — the local version stays the default.
 DeskAudit/
 ├── main.py                  # Entry point: run the agent or make a report
 ├── config.yaml              # Poll interval, idle threshold, watched folders
+├── projects.yaml            # Your projects + rules + overrides (edit this)
 ├── requirements.txt
-├── run.bat                  # Double-click to start on Windows
-├── dashboard.bat            # Double-click to open the dashboard
+├── run.bat                  # Double-click to start on Windows (from source)
+├── dashboard.bat            # Double-click to open the dashboard (from source)
+├── schedule_summary.bat     # Double-click to schedule the 9pm job (also shipped in the exe folder)
+├── unschedule_summary.bat   # Remove the 9pm job (also shipped in the exe folder)
+├── usb_write_protect.bat    # Block writing to USB drives (admin; also shipped in the exe folder)
+├── usb_write_allow.bat      # Undo the USB write block (also shipped in the exe folder)
+├── build_exe.bat            # Build dist\DeskAudit\DeskAudit.exe (PyInstaller, Windows)
+├── DeskAudit.spec           # PyInstaller spec (copies configs + the 4 .bat files into dist/)
 ├── deskaudit/
 │   ├── __init__.py
 │   ├── config.py            # Loads config.yaml, with safe defaults
@@ -289,22 +300,40 @@ DeskAudit/
 │   ├── projects.py          # Project rule engine: Tagger, Project, Override
 │   ├── alerts.py            # Alerts rule engine + Windows notification
 │   ├── summary.py           # Daily Bengali summary + weekly review
+│   ├── llm_summary.py       # Optional LLM-written summary (Gemini / OpenAI / Anthropic)
+│   ├── backup.py            # SQLite online backup / restore / pruning
+│   ├── secret_gate.py       # 4 desktop clicks + code opens the dashboard
+│   ├── transfers.py         # Data Transfer Monitor: USB / cloud / email / print / sensitive folders
 │   ├── dashboard.py         # Web dashboard: data API + stdlib HTTP server
 │   ├── dashboard_static/
 │   │   └── index.html       # Dashboard page: cards, charts, tables, filters
-│   ├── report.py            # Daily summary: Markdown + CSV (incl. browser + projects)
+│   ├── report.py            # Daily summary: Markdown + CSV (incl. browser + projects + transfers)
 │   └── utils.py             # Duration formatting, path helpers
-├── projects.yaml            # Your projects + rules + overrides (edit this)
+├── installer/
+│   ├── DeskAudit.nsi        # NSIS installer (built on Linux with makensis)
+│   ├── DeskAudit.iss        # Inno Setup installer (built on Windows)
+│   ├── build_installer.bat  # Build Setup.exe with Inno Setup 6 (Windows)
+│   └── deskaudit.ico        # App icon (monitor + magnifier + checkmark)
+├── .github/workflows/
+│   └── build-windows.yml    # GitHub Actions build (exe + Setup.exe on every push)
 ├── extension/chrome/        # Optional Tab Reporter extension (Manifest V3)
 ├── data/                    # deskaudit.db + deskaudit.log (created on run)
 ├── reports/                 # Daily reports (created on run)
+├── backups/                 # Database backups (created on run)
 └── tests/
     ├── test_smoke.py        # Import + DB + report smoke test, no Windows needed
     ├── test_browser.py      # Synthetic Chrome + Firefox DB tests
     ├── test_projects.py     # Rule engine + retag + project report tests
     ├── test_dashboard.py    # Dashboard summary + live HTTP server tests
+    ├── test_dashboard_js.py # Real JS e2e in Node against the live server
     ├── test_alerts.py       # Every alert rule + dedup + save/list tests
-    └── test_summary.py      # Daily + weekly Bengali summary tests
+    ├── test_summary.py      # Daily + weekly Bengali summary tests
+    ├── test_config.py       # Config load / coercion / exclusion tests
+    ├── test_backup.py       # Backup / restore / pruning tests
+    ├── test_llm.py          # LLM payload + provider call tests (mocked network)
+    ├── test_secret_gate.py  # Secret gate state machine tests
+    ├── test_transfers.py    # Data Transfer Monitor tests
+    └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
 ## Quick start (Windows)
@@ -331,15 +360,26 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-11.0.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-11.1.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
-(DeskAudit, DeskAudit Dashboard, Stop DeskAudit), and can start the
-agent with Windows. Uninstall from Windows Settings like any other app.
+(DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
+and can start the agent with Windows. Uninstall from Windows Settings like any other app.
 The exe and the installer carry the DeskAudit icon (monitor + magnifier
 + checkmark, `installer/deskaudit.ico`).
 Upgrading: the installer stops a running agent first, so just run the
-new Setup.exe over the old install.
+new Setup.exe over the old install. Uninstall keeps your data: `data/`
+(the database), `reports/`, `backups/` and `config.local.yaml` (with the
+Gemini key) stay in the install folder — delete them yourself if you
+really want them gone.
+
+**Installed app = same commands:** every `python main.py --x` command in
+this README also works as `DeskAudit.exe --x` from the install folder —
+`--report`, `--ai-summary`, `--alerts`, `--transfers`, `--retag`,
+`--suggest-projects`, `--backup`, `--restore`, `--schedule-summary`.
+One-shot output is written to `data/deskaudit-stdout.log` (the windowed
+exe has no console window to print into); the reports themselves land in
+`reports/` and the dashboard as usual.
 
 **Background mode — no console window, ever:** the exe is built
 windowed (`console=False`), so Windows never creates a CMD/PowerShell
@@ -359,17 +399,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v11.0-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v11.1-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-11.0.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-11.1.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-11.0.exe`).
+produces the same `installer\Output\DeskAudit-Setup-11.1.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
@@ -419,7 +459,10 @@ python main.py --restore --latest    # restore the newest backup
 
 ## 9pm automatic job (backup + alerts + daily summary)
 
-On Windows, double-click **`schedule_summary.bat`** (or run
+On Windows, double-click **`schedule_summary.bat`** (in the install
+folder — it is shipped with Setup.exe and the portable zip — or Start
+Menu → "Schedule 9pm daily job"), or run
+`DeskAudit.exe --schedule-summary` (from source:
 `python main.py --schedule-summary`). It creates a Task Scheduler task
 "DeskAudit Daily Summary" that runs **every day at 21:00**:
 
@@ -429,7 +472,9 @@ python main.py --evening-job
 
 That one command does: database backup → alerts check → daily summary
 → weekly review on Sundays. To remove the task, double-click
-`unschedule_summary.bat` or run `python main.py --unschedule-summary`.
+`unschedule_summary.bat` or run `DeskAudit.exe --unschedule-summary`.
+The job first polls browser history and scans transfers, so it works
+even if the agent was not running that day.
 
 ## LLM-written summary (optional)
 

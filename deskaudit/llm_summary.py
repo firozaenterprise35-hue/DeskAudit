@@ -62,9 +62,43 @@ def _api_key(llm_cfg: dict) -> str:
 
 
 def _stats_payload(result: dict) -> dict:
-    """Only aggregated stats — never titles, paths or URLs."""
+    """Only aggregated stats — never titles, paths or URLs.
+
+    Daily results carry active_seconds/idle_seconds/projects; weekly
+    results carry total_active_seconds/total_idle_seconds/top_project
+    and per-day rows. A weekly payload built from the daily keys sent
+    all zeros to the LLM, so the weekly summary described a week in
+    which nothing happened — map both shapes here."""
     s = result.get("summary") or result
     stats = result.get("stats", {})
+    if "total_active_seconds" in stats:
+        # Weekly shape.
+        rows = result.get("rows") or []
+        projects = []
+        if stats.get("top_project"):
+            projects.append({
+                "project": stats["top_project"],
+                "active_minutes": round(float(stats.get("top_project_seconds", 0)) / 60),
+                "goal_percent": 0,
+            })
+        return {
+            "end": result.get("end"),
+            "start": result.get("start"),
+            "days": result.get("days"),
+            "active_minutes": round(float(stats.get("total_active_seconds", 0)) / 60),
+            "avg_active_minutes": round(float(stats.get("avg_active_seconds", 0)) / 60),
+            "idle_minutes": round(float(stats.get("total_idle_seconds", 0)) / 60),
+            "productive_minutes": round(float(stats.get("productive_seconds", 0)) / 60),
+            "distracting_minutes": round(float(stats.get("distracting_seconds", 0)) / 60),
+            "projects": projects,
+            "file_events": sum(int(r.get("file_events", 0)) for r in rows),
+            "visits": sum(int(r.get("visits", 0)) for r in rows),
+            "days_detail": [
+                {"date": r.get("date"),
+                 "active_minutes": round(float(r.get("active_seconds", 0)) / 60)}
+                for r in rows
+            ],
+        }
     projects = [
         {"project": p["project"], "active_minutes": round(p["active_seconds"] / 60),
          "goal_percent": p.get("goal_percent", 0)}

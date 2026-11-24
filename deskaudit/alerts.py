@@ -268,7 +268,10 @@ def check_alerts(db: Database, date: str | None = None,
     if tcfg.get("enabled", True):
         try:
             tcounts = db.transfer_counts(date)
-            trows = db.transfers_for_date(date, limit=100)
+            # Uncapped: thresholds must see the whole day, not just the
+            # newest 100 rows (on a busy day the capped fetch undercounted
+            # cloud/communication seconds and alerts never fired).
+            trows = db.transfers_for_date(date, limit=None)
         except Exception:
             tcounts, trows = {}, []
 
@@ -381,20 +384,17 @@ def save_alerts(db: Database, alerts: list[Alert]) -> list[Alert]:
 
 def notify_windows(alerts: list[Alert]) -> bool:
     """Best-effort Windows toast notification. Returns False on Linux /
-    when no notifier is available — never raises."""
+    when no notifier is available — never raises.
+
+    Only the PowerShell toast path is used: the old plyer path is gone
+    (plyer was never in requirements.txt, so it could never run), and
+    the old code returned True unconditionally even when PowerShell
+    failed — now the result is actually checked.
+    """
     if not alerts or sys.platform != "win32":
         return False
     title = f"DeskAudit: {len(alerts)}টি অ্যালার্ট"
     body = "\n".join(a.title for a in alerts[:3])
-    # 1) plyer, if installed
-    try:
-        from plyer import notification  # type: ignore
-
-        notification.notify(title=title, message=body, timeout=10)
-        return True
-    except Exception:
-        pass
-    # 2) PowerShell toast via Windows.UI.Notifications
     ps = (
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
         "ContentType = WindowsRuntime] | Out-Null; "
@@ -406,8 +406,8 @@ def notify_windows(alerts: list[Alert]) -> bool:
         ".Show([Windows.UI.Notifications.ToastNotification]::new($xml))"
     )
     try:
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                       capture_output=True, timeout=15, check=False)
-        return True
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                capture_output=True, timeout=15, check=False)
+        return result.returncode == 0
     except Exception:
         return False

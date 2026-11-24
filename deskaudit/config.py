@@ -6,9 +6,13 @@ starts with the defaults below instead of crashing.
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_log = logging.getLogger("deskaudit.config")
 
 DEFAULTS = {
     "poll_interval_seconds": 5,
@@ -53,6 +57,16 @@ def expand_path(raw: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(raw)))
 
 
+def _coerce_int(value, default: int) -> int:
+    """int() that falls back to `default` with a warning instead of
+    crashing every command on a typo like poll_interval_seconds: "fast"."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        _log.warning("Bad config value %r — using default %s.", value, default)
+        return default
+
+
 @dataclass
 class Config:
     poll_interval_seconds: int = 5
@@ -92,7 +106,12 @@ class Config:
 
                 with cfg_path.open(encoding="utf-8") as f:
                     raw = yaml.safe_load(f) or {}
-            except Exception:
+            except Exception as exc:
+                # Loud, not silent: a YAML syntax error used to fall back
+                # to defaults with no message anywhere.
+                _log.warning("config.yaml could not be parsed (%s) — using defaults.", exc)
+                print(f"WARNING: config.yaml could not be parsed ({exc}) — using defaults.",
+                      file=sys.stderr)
                 raw = {}
         # config.local.yaml (same folder, git-ignored) overrides config.yaml.
         # This is where secrets belong — e.g. llm.api_key — because
@@ -111,7 +130,8 @@ class Config:
                         raw[key] = {**raw[key], **value}
                     else:
                         raw[key] = value
-            except Exception:
+            except Exception as exc:
+                _log.warning("config.local.yaml could not be parsed (%s) — ignoring it.", exc)
                 pass
         merged = {**DEFAULTS, **raw}
         root = cfg_path.resolve().parent if cfg_path.exists() else Path(".").resolve()
@@ -121,8 +141,8 @@ class Config:
 
         transfers = {**DEFAULT_TRANSFERS, **(merged.get("transfers", {}) or {})}
         return cls(
-            poll_interval_seconds=int(merged.get("poll_interval_seconds", 5)),
-            idle_threshold_seconds=int(merged.get("idle_threshold_seconds", 300)),
+            poll_interval_seconds=_coerce_int(merged.get("poll_interval_seconds", 5), 5),
+            idle_threshold_seconds=_coerce_int(merged.get("idle_threshold_seconds", 300), 300),
             db_path=(root / expand_path(str(merged.get("db_path", "data/deskaudit.db"))))
             if not expand_path(str(merged.get("db_path", "data/deskaudit.db"))).is_absolute()
             else expand_path(str(merged.get("db_path", "data/deskaudit.db"))),
@@ -139,18 +159,18 @@ class Config:
                 str(e).lower() for e in merged.get("exclude_folders", [])
             },
             browser_enabled=bool(merged.get("browser_enabled", True)),
-            browser_poll_seconds=int(merged.get("browser_poll_seconds", 60)),
-            browser_cdp_port=int(merged.get("browser_cdp_port", 0) or 0),
+            browser_poll_seconds=_coerce_int(merged.get("browser_poll_seconds", 60), 60),
+            browser_cdp_port=_coerce_int(merged.get("browser_cdp_port", 0) or 0, 0),
             browser_receiver_enabled=bool(merged.get("browser_receiver_enabled", False)),
-            browser_receiver_port=int(merged.get("browser_receiver_port", 8765)),
+            browser_receiver_port=_coerce_int(merged.get("browser_receiver_port", 8765), 8765),
             track_downloads=bool(merged.get("track_downloads", True)),
             track_searches=bool(merged.get("track_searches", True)),
             productive_domains={str(e).lower() for e in merged.get("productive_domains", [])},
             distracting_domains={str(e).lower() for e in merged.get("distracting_domains", [])},
             exclude_domains={str(e).lower() for e in merged.get("exclude_domains", [])},
             alerts=dict(merged.get("alerts", {}) or {}),
-            backup_keep_days=int(merged.get("backup_keep_days", 30)),
-            backup_keep_count=int(merged.get("backup_keep_count", 30)),
+            backup_keep_days=_coerce_int(merged.get("backup_keep_days", 30), 30),
+            backup_keep_count=_coerce_int(merged.get("backup_keep_count", 30), 30),
             backup_on_start=bool(merged.get("backup_on_start", True)),
             llm=dict(merged.get("llm", {}) or {}),
             dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
@@ -160,8 +180,37 @@ class Config:
         )
 
     def is_excluded(self, path: Path) -> bool:
-        """True if a file/folder should not be logged."""
+        """True if a file/folder should not be logged.
+
+        Folder exclusions apply ONLY under the app's own folder
+        (project_root/data, project_root/reports, ...). The old check
+        matched ANY path component, so Documents\\data\\invoice.xlsx and
+        Documents\\reports\\Q4.xlsx were never logged — and transfer
+        detection was blind for those folders too.
+        """
         lowered = str(path).lower()
         if path.suffix.lower() in self.exclude_extensions:
             return True
-        return any(part.lower() in self.exclude_folders for part in Path(lowered).parts)
+        p = lowered.replace("\\", "/").rstrip("/")
+        root = str(self.project_root).replace("\\", "/").lower().rstrip("/")
+        for folder in self.exclude_folders:
+            f = f"{root}/{str(folder).lower().strip('/')}"
+            if p == f or p.startswith(f + "/"):
+                return True
+        return False
+
+    def effective_watch_folders(self) -> list[Path]:
+        """Watch folders + sensitive folders (for the Data Transfer
+        Monitor). A sensitive folder outside Desktop/Documents still
+        needs watching, or no file events exist to scan for it."""
+        folders: list[Path] = list(self.watch_folders)
+        seen = {str(p).lower().replace("\\", "/") for p in folders}
+        for raw in (self.transfers or {}).get("sensitive_folders") or []:
+            try:
+                p = expand_path(str(raw))
+            except Exception:
+                continue
+            if str(p).lower().replace("\\", "/") not in seen:
+                seen.add(str(p).lower().replace("\\", "/"))
+                folders.append(p)
+        return folders

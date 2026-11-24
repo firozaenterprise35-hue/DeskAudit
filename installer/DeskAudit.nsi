@@ -2,13 +2,13 @@
 ; Build the exe first (build_exe.bat on Windows, or the Wine build),
 ; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
 ;   makensis installer\DeskAudit.nsi
-; Output: installer\Output\DeskAudit-Setup-11.0.exe
+; Output: installer\Output\DeskAudit-Setup-11.1.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "11.0"
+!define APP_VERSION "11.1"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
@@ -60,6 +60,7 @@ Section "${APP_NAME} (required)" SecMain
   File /r "${__FILEDIR__}/../dist/${APP_NAME}/*.*"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME} ${APP_VERSION}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
@@ -69,6 +70,7 @@ Section "${APP_NAME} (required)" SecMain
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "--hidden" "$INSTDIR\${APP_EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Dashboard.lnk" "$INSTDIR\${APP_EXE}" "--open-dashboard" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\Schedule 9pm daily job.lnk" "$INSTDIR\schedule_summary.bat" "" "$INSTDIR\schedule_summary.bat" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Stop ${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "--stop" "$INSTDIR\${APP_EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
 SectionEnd
@@ -85,10 +87,23 @@ SectionEnd
 
 Section "Uninstall"
   ExecWait 'taskkill /F /IM DeskAudit.exe'
+  ; Preserve the audit history: data/ (the whole database), reports/,
+  ; backups/ and config.local.yaml (incl. the Gemini key) are the
+  ; user's data, not the install — deleting them on uninstall used to
+  ; wipe everything with no warning. Only remove what was installed.
+  Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\config.yaml"
+  Delete "$INSTDIR\projects.yaml"
+  Delete "$INSTDIR\schedule_summary.bat"
+  Delete "$INSTDIR\unschedule_summary.bat"
+  Delete "$INSTDIR\usb_write_protect.bat"
+  Delete "$INSTDIR\usb_write_allow.bat"
+  RMDir /r "$INSTDIR\_internal"
   Delete "$INSTDIR\uninstall.exe"
-  RMDir /r "$INSTDIR"
+  RMDir "$INSTDIR"  ; only succeeds when the folder is empty (no data left)
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME} Dashboard.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\Schedule 9pm daily job.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\Stop ${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk"
   RMDir "$SMPROGRAMS\${APP_NAME}"

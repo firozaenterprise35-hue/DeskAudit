@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS transfers (
     app TEXT DEFAULT '',
     occurred_at TEXT NOT NULL,
     details TEXT DEFAULT '',
-    UNIQUE(date, transfer_type, channel, file_name, occurred_at)
+    UNIQUE(date, transfer_type, channel, file_name, file_path, occurred_at)
 );
 CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers(date);
 CREATE INDEX IF NOT EXISTS idx_transfers_type ON transfers(transfer_type);
@@ -171,6 +171,51 @@ class Database:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
         self._migrate_project_columns()
+        self._migrate_transfers_dedup()
+
+    def _migrate_transfers_dedup(self) -> None:
+        """v11.1: the transfers UNIQUE key now includes file_path, so the
+        same file name in two folders (or two print jobs of one document
+        in one poll) are no longer silently dropped as duplicates.
+        SQLite cannot ALTER a UNIQUE constraint, so an old table is
+        rebuilt (copy rows, drop, rename). Fresh DBs already have the
+        new key — the check below skips them."""
+        try:
+            row = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='transfers'"
+            ).fetchone()
+            if row is None or "file_path, occurred_at" in (row["sql"] or ""):
+                return
+            self.conn.execute(
+                """CREATE TABLE transfers_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    transfer_type TEXT NOT NULL,
+                    channel TEXT DEFAULT '',
+                    file_name TEXT DEFAULT '',
+                    file_path TEXT DEFAULT '',
+                    size_bytes INTEGER,
+                    destination TEXT DEFAULT '',
+                    app TEXT DEFAULT '',
+                    occurred_at TEXT NOT NULL,
+                    details TEXT DEFAULT '',
+                    UNIQUE(date, transfer_type, channel, file_name, file_path, occurred_at)
+                )""")
+            self.conn.execute(
+                """INSERT OR IGNORE INTO transfers_new
+                   (id, date, transfer_type, channel, file_name, file_path,
+                    size_bytes, destination, app, occurred_at, details)
+                   SELECT id, date, transfer_type, channel, file_name, file_path,
+                          size_bytes, destination, app, occurred_at, details
+                   FROM transfers""")
+            self.conn.execute("DROP TABLE transfers")
+            self.conn.execute("ALTER TABLE transfers_new RENAME TO transfers")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers(date)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_transfers_type ON transfers(transfer_type)")
+            self.conn.commit()
+        except Exception:
+            # Never break startup over a migration; the old key still works.
+            self.conn.rollback()
 
     def _migrate_project_columns(self) -> None:
         """Add project/tags columns to tables created before tagging existed.
@@ -216,6 +261,15 @@ class Database:
 
     def close_app_session(self, session_id: int, ended_at: datetime,
                           duration: float, active: float, idle: float) -> None:
+        self.update_app_session(session_id, ended_at, duration, active, idle)
+
+    def update_app_session(self, session_id: int, ended_at: datetime,
+                           duration: float, active: float, idle: float) -> None:
+        """Write the current durations into an OPEN session row without
+        closing it. The agent flushes this every poll, so a force-stop,
+        reboot or crash loses at most one poll interval — the old code
+        only wrote durations on window change / clean shutdown, so the
+        whole current session was lost on every taskkill."""
         self.conn.execute(
             """UPDATE app_sessions SET ended_at=?, duration_seconds=?,
                active_seconds=?, idle_seconds=? WHERE id=?""",
@@ -355,6 +409,14 @@ class Database:
     def close_browser_session(self, session_id: int, ended_at: datetime,
                               duration: float, active: float, idle: float,
                               tab_switches: int = 0) -> None:
+        self.update_browser_session(session_id, ended_at, duration, active,
+                                    idle, tab_switches)
+
+    def update_browser_session(self, session_id: int, ended_at: datetime,
+                               duration: float, active: float, idle: float,
+                               tab_switches: int = 0) -> None:
+        """Same as close_browser_session but without closing: the periodic
+        flush for the open browser session (see update_app_session)."""
         self.conn.execute(
             """UPDATE browser_sessions SET ended_at=?, duration_seconds=?,
                active_seconds=?, idle_seconds=?, tab_switches=? WHERE id=?""",
@@ -559,6 +621,33 @@ class Database:
                 "visits": int(r["visits"] or 0),
             })
         out.sort(key=lambda x: -x["active"])
+        # Parent rollup: a child project's time also counts toward its
+        # parent ("Office / Client A" rolls up into "Office"), so the
+        # parent row shows the whole team's time while the child row
+        # keeps its own. `parent` was stored but never used anywhere.
+        try:
+            parents = {r["name"]: (r["parent"] or "") for r in self.conn.execute(
+                "SELECT name, parent FROM projects").fetchall()}
+        except Exception:
+            parents = {}
+        if parents:
+            by_name = {row["project"]: row for row in out}
+            for row in list(out):
+                parent = parents.get(row["project"]) or ""
+                if parent and parent != row["project"]:
+                    prow = by_name.get(parent)
+                    if prow is None:
+                        prow = {"project": parent, "app_active": 0.0,
+                                "browser_active": 0.0, "active": 0.0,
+                                "file_events": 0, "visits": 0}
+                        out.append(prow)
+                        by_name[parent] = prow
+                    prow["app_active"] += row["app_active"]
+                    prow["browser_active"] += row["browser_active"]
+                    prow["active"] += row["active"]
+                    prow["file_events"] += row["file_events"]
+                    prow["visits"] += row["visits"]
+            out.sort(key=lambda x: -x["active"])
         return out
 
     def untagged_top(self, date: str, limit: int = 10) -> dict:
@@ -737,14 +826,23 @@ class Database:
         except Exception:
             return False
 
-    def has_transfer(self, date: str, transfer_type: str, file_name: str) -> bool:
+    def has_transfer(self, date: str, transfer_type: str, file_path: str) -> bool:
+        """True when this exact file (full path) already has a row — the
+        same file NAME in another folder is a different file."""
         row = self.conn.execute(
             """SELECT 1 FROM transfers WHERE date = ? AND transfer_type = ?
-               AND file_name = ? LIMIT 1""",
-            (date, transfer_type, file_name)).fetchone()
+               AND file_path = ? LIMIT 1""",
+            (date, transfer_type, file_path)).fetchone()
         return row is not None
 
-    def transfers_for_date(self, date: str, limit: int = 100) -> list[sqlite3.Row]:
+    def transfers_for_date(self, date: str, limit: int | None = 100) -> list[sqlite3.Row]:
+        """Rows for one day, newest first. limit=None returns all rows —
+        exports and alert checks must not silently drop rows on busy days."""
+        if limit is None:
+            return self.conn.execute(
+                """SELECT * FROM transfers WHERE date = ?
+                   ORDER BY occurred_at DESC""",
+                (date,)).fetchall()
         return self.conn.execute(
             """SELECT * FROM transfers WHERE date = ?
                ORDER BY occurred_at DESC LIMIT ?""",

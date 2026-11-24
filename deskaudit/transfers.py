@@ -22,18 +22,23 @@ the transfer is visible and preserved, the private content is not read.
 How detection works (all local, no internet):
   * USB: Windows drive polling (GetDriveType == DRIVE_REMOVABLE) plus a
     snapshot diff of the drive's files — a file that appears on the drive
-    was copied there. Off-Windows this is a no-op.
+    was copied there. Off-Windows this is a no-op. Note: external USB
+    hard drives that Windows reports as FIXED drives are not detected —
+    pen drives and memory cards are.
   * Cloud / email / message: the browser tracker already records sessions
     and visits; a session on a known cloud / mail / messaging domain (with
     at least ``cloud_min_seconds`` / ``communication_min_seconds`` of
     active time) becomes a transfer row. Visits alone (history-only import)
     give one row per domain per day as a fallback.
   * Print: the Windows print spooler (win32print.EnumJobs) is polled; each
-    new job id becomes a row. Off-Windows this is a no-op.
+    new job id becomes a row. Off-Windows this is a no-op. A job that
+    prints and finishes between two polls is never seen.
   * Sensitive folders + large transfers: scanned from the file_events the
     file watcher already logs — a "moved" event whose source is inside a
     sensitive folder and whose destination is outside it is a copy out;
-    a moved file over ``large_transfer_mb`` is a large transfer.
+    a "created" event outside a sensitive folder whose same-named,
+    same-sized original still sits inside one is a copy too; a moved or
+    copied file over ``large_transfer_mb`` is a large transfer.
 
 All rows live in the ``transfers`` table (see database.py) and are
 deduplicated on (date, type, channel, file, time), so repeated scans
@@ -119,20 +124,23 @@ def classify_transfer_domain(domain: str) -> str | None:
     """'cloud' | 'email' | 'message' | None, for one domain.
 
     Email is checked before message, cloud before both — a domain can only
-    be one channel, and the order keeps the result stable.
+    be one channel, and the order keeps the result stable. Matching is on
+    whole labels (exact or a subdomain): "file.io" must not match
+    "profile.io", and "box.com" must not match "mybox.com".
     """
-    d = (domain or "").lower()
+    d = (domain or "").lower().strip()
     if not d:
         return None
-    for item in CLOUD_DOMAINS:
-        if item in d:
-            return "cloud"
-    for item in EMAIL_DOMAINS:
-        if item in d:
-            return "email"
-    for item in MESSAGE_DOMAINS:
-        if item in d:
-            return "message"
+
+    def _match(items) -> bool:
+        return any(d == item or d.endswith("." + item) for item in items)
+
+    if _match(CLOUD_DOMAINS):
+        return "cloud"
+    if _match(EMAIL_DOMAINS):
+        return "email"
+    if _match(MESSAGE_DOMAINS):
+        return "message"
     return None
 
 
@@ -179,11 +187,14 @@ def list_removable_drives() -> list[str]:
     return drives
 
 
-def snapshot_drive(root: str, max_files: int = 2000, max_depth: int = 6) -> dict[str, tuple[int, int]]:
+def snapshot_drive(root: str, max_files: int = 20000, max_depth: int = 6) -> dict[str, tuple[int, int]]:
     """{relative posix path: (size_bytes, mtime)} for files on a drive.
 
     Bounded (file count + depth + hidden/system folders skipped) so a
-    big USB stick cannot stall the agent loop.
+    big USB stick cannot stall the agent loop. Hidden FILES are included
+    (a copied .env must be visible); only hidden/system folders are
+    skipped. The cap is high enough that truncation is not a practical
+    concern on a pen drive.
     """
     out: dict[str, tuple[int, int]] = {}
     root_path = Path(root)
@@ -200,8 +211,6 @@ def snapshot_drive(root: str, max_files: int = 2000, max_depth: int = 6) -> dict
         for name in filenames:
             if len(out) >= max_files:
                 return out
-            if name.startswith("."):
-                continue
             try:
                 st = (Path(dirpath) / name).stat()
             except OSError:
@@ -212,14 +221,14 @@ def snapshot_drive(root: str, max_files: int = 2000, max_depth: int = 6) -> dict
 
 
 def diff_snapshots(old: dict, new: dict) -> list[tuple[str, int]]:
-    """Files that appeared on the drive, or changed size/mtime.
+    """Files that appeared on the drive — i.e. what was copied onto it.
 
-    Returns [(relative path, size_bytes)] — i.e. what was copied onto it.
+    Only NEW files count. A file that merely changed size/mtime was
+    edited in place on the stick, not copied onto it.
     """
     added = []
     for rel, (size, mtime) in new.items():
-        prev = old.get(rel)
-        if prev is None or prev != (size, mtime):
+        if rel not in old:
             added.append((rel, size))
     return added
 
@@ -329,7 +338,8 @@ class TransferMonitor:
         self.sensitive_folders = folders
         self._usb_snapshots: dict[str, dict] = {}
         self._seen_usb: set[str] = set()
-        self._seen_print_jobs: set[int] = set()
+        self._usb_seeded = False
+        self._seen_print_jobs: set[tuple[str, int]] = set()
 
     # -- helpers ---------------------------------------------------------
     def _log(self, transfer: Transfer) -> bool:
@@ -341,11 +351,48 @@ class TransferMonitor:
                 transfer.occurred_at or datetime.now().astimezone().isoformat(timespec="seconds"),
                 json.dumps(transfer.details, ensure_ascii=False) if transfer.details else "",
             )
-        except Exception:
+        except Exception as exc:
+            # A failing transfers table used to lose rows with no trace
+            # anywhere while scan_today reported success. Log it.
+            import logging
+
+            logging.getLogger("deskaudit.transfers").warning(
+                "Transfer not logged (%s %s): %s",
+                transfer.transfer_type, transfer.file_name, exc)
             return False
 
     def _now(self) -> datetime:
         return datetime.now().astimezone()
+
+    def _stamp(self, now: datetime, index: int) -> str:
+        """Per-event timestamp: several events found in one poll must not
+        share the same occurred_at, or the transfers UNIQUE key silently
+        drops all but the first (two print jobs of one document, two USB
+        copies of one name)."""
+        from datetime import timedelta
+
+        # Millisecond precision matters: two events in one poll stamped
+        # with timespec="seconds" collide in the transfers UNIQUE key.
+        return (now + timedelta(milliseconds=index)).isoformat(timespec="milliseconds")
+
+    def _seed_usb_seen(self, date: str) -> None:
+        """On the first poll, treat drives with a usb_insert row TODAY as
+        already seen — otherwise every agent restart logs a spurious
+        usb_insert for a drive that was never unplugged."""
+        if self._usb_seeded:
+            return
+        self._usb_seeded = True
+        try:
+            rows = self.db.conn.execute(
+                "SELECT channel FROM transfers WHERE date = ? AND transfer_type = 'usb_insert'",
+                (date,)).fetchall()
+            current = set(list_removable_drives())
+            for r in rows:
+                if r["channel"] in current:
+                    self._seen_usb.add(r["channel"])
+                    self._usb_snapshots[r["channel"]] = snapshot_drive(r["channel"])
+        except Exception:
+            pass
 
     # -- USB --------------------------------------------------------------
     def poll_usb(self, now: datetime | None = None) -> list[Transfer]:
@@ -353,6 +400,7 @@ class TransferMonitor:
         now = now or self._now()
         date = now.strftime("%Y-%m-%d")
         found: list[Transfer] = []
+        self._seed_usb_seen(date)
         current = set(list_removable_drives())
         # Removed drives (were seen, now gone).
         for drive in sorted(self._seen_usb - current):
@@ -370,18 +418,21 @@ class TransferMonitor:
                     found.append(t)
             else:
                 old = self._usb_snapshots.get(drive, {})
-                for rel, size in diff_snapshots(old, snap):
-                    # Skip a file already logged from a "moved" file event.
+                for i, (rel, size) in enumerate(diff_snapshots(old, snap)):
+                    dest_path = str(Path(drive) / rel)
+                    # Skip a file already logged from a "moved" file event
+                    # (matched by full path — the same name in another
+                    # folder is a different file).
                     try:
-                        if self.db.has_transfer(date, "usb_copy", Path(rel).name):
+                        if self.db.has_transfer(date, "usb_copy", dest_path):
                             continue
                     except Exception:
                         pass
                     t = Transfer("usb_copy", channel=drive,
                                  file_name=Path(rel).name,
-                                 file_path=str(Path(drive) / rel),
+                                 file_path=dest_path,
                                  size_bytes=size, destination=drive,
-                                 occurred_at=now.isoformat(timespec="seconds"),
+                                 occurred_at=self._stamp(now, i),
                                  date=date)
                     if self._log(t):
                         found.append(t)
@@ -391,20 +442,27 @@ class TransferMonitor:
 
     # -- Print ------------------------------------------------------------
     def poll_printers(self, now: datetime | None = None) -> list[Transfer]:
-        """Log each new spooler job once (tracked by job id)."""
+        """Log each new spooler job once.
+
+        Job IDs are per-printer, so the seen key is (printer, job_id) —
+        Printer B's job 5 must not be skipped because Printer A's job 5
+        was seen. Note the spooler is polled: a job that prints and
+        finishes between two polls is never seen (see README).
+        """
         now = now or self._now()
         date = now.strftime("%Y-%m-%d")
         found: list[Transfer] = []
-        for job in list_print_jobs():
+        for i, job in enumerate(list_print_jobs()):
             job_id = job.get("job_id") or 0
-            if not job_id or job_id in self._seen_print_jobs:
+            printer = job.get("printer", "")
+            if not job_id or (printer, job_id) in self._seen_print_jobs:
                 continue
-            self._seen_print_jobs.add(job_id)
-            t = Transfer("print", channel=job.get("printer", ""),
+            self._seen_print_jobs.add((printer, job_id))
+            t = Transfer("print", channel=printer,
                          file_name=job.get("document", ""),
                          size_bytes=job.get("size_bytes") or None,
-                         destination=job.get("printer", ""),
-                         occurred_at=now.isoformat(timespec="seconds"),
+                         destination=printer,
+                         occurred_at=self._stamp(now, i),
                          details={"pages": job.get("pages", 0),
                                   "user": job.get("user", "")},
                          date=date)
@@ -432,11 +490,14 @@ class TransferMonitor:
             kind = classify_transfer_domain(r["domain"] or "")
             if not kind:
                 continue
+            # Mark the domain as session-covered BEFORE the minimum check:
+            # a 30 s Gmail session must not fall through to the history
+            # fallback and get logged anyway as a zero-second row.
+            session_domains.add(r["domain"])
             seconds = float(r["active_seconds"] or 0)
             minimum = min_cloud if kind == "cloud" else min_comm
             if seconds < minimum:
                 continue
-            session_domains.add(r["domain"])
             t = Transfer(kind, channel=r["domain"], app=r["browser"] or "",
                          occurred_at=r["started_at"],
                          details={"seconds": int(seconds)}, date=date)
@@ -464,12 +525,39 @@ class TransferMonitor:
                 found.append(t)
         return found
 
+    def _sensitive_original_exists(self, file_name: str, size) -> bool:
+        """True when a file with this name (and size, when known) still
+        sits inside a sensitive folder — i.e. the created file outside
+        it is a copy of that original, not a new file of the same name."""
+        for folder in self.sensitive_folders:
+            candidate = Path(folder) / file_name
+            try:
+                if candidate.is_file():
+                    if size is None or candidate.stat().st_size == int(size):
+                        return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    def _usb_drive_for(self, dest: str, removable: list[str]) -> str:
+        """The removable drive root `dest` sits on, or ''."""
+        dest_norm = normalize_path(dest)
+        for d in removable:
+            prefix = normalize_path(d).rstrip("/") + "/"
+            if (dest_norm + "/").startswith(prefix):
+                return d
+        return ""
+
     # -- File events: sensitive copies + large moves ------------------------
     def scan_file_events(self, date: str | None = None) -> list[Transfer]:
-        """Copies out of sensitive folders + large file moves, from file_events."""
+        """Copies out of sensitive folders + large file moves/copies, from
+        file_events. A plain Ctrl+C/Ctrl+V copy produces a `created` event
+        at the destination (no `moved` event) — that is the most common
+        way data leaves, so `created` events are scanned too."""
         date = date or today_str()
         found: list[Transfer] = []
         large_bytes = int(self.settings.get("large_transfer_mb", 100)) * 1024 * 1024
+        removable = list_removable_drives()
         try:
             rows = self.db.conn.execute(
                 """SELECT event_type, path, dest_path, size_bytes, occurred_at
@@ -492,28 +580,42 @@ class TransferMonitor:
                              occurred_at=r["occurred_at"], date=date)
                 if self._log(t):
                     found.append(t)
-            # A big file moved anywhere (a copy out), incl. onto a USB drive.
-            if r["event_type"] == "moved" and size and int(size) >= large_bytes:
-                dest_norm = normalize_path(dest)
-                removable = list_removable_drives()
-                on_usb = any(normalize_path(d).rstrip("/") + "/" in dest_norm + "/"
-                             for d in removable) if removable else False
-                if on_usb:
+            # A plain copy out: a `created` event outside a sensitive
+            # folder, for a file whose same-named, same-sized original
+            # still sits inside one.
+            if (r["event_type"] == "created"
+                    and not is_sensitive_path(src, self.sensitive_folders)
+                    and self._sensitive_original_exists(name, size)):
+                t = Transfer("sensitive_copy",
+                             channel=Path(src.replace("\\", "/")).parent.as_posix(),
+                             file_name=name, file_path=src, size_bytes=size,
+                             destination=src,
+                             occurred_at=r["occurred_at"],
+                             details={"source": "created"}, date=date)
+                if self._log(t):
+                    found.append(t)
+            # A big file moved OR copied anywhere (a copy out), incl. onto
+            # a USB drive.
+            if size and int(size) >= large_bytes and r["event_type"] in ("moved", "created"):
+                target = dest if (r["event_type"] == "moved" and dest) else src
+                usb_drive = self._usb_drive_for(target, removable)
+                if usb_drive:
                     try:
-                        if self.db.has_transfer(date, "usb_copy", name):
+                        if self.db.has_transfer(date, "usb_copy", target):
                             continue
                     except Exception:
                         pass
-                    t = Transfer("usb_copy", channel=dest[:3],
+                    t = Transfer("usb_copy", channel=usb_drive,
                                  file_name=name, file_path=src, size_bytes=int(size),
-                                 destination=dest,
+                                 destination=target,
                                  occurred_at=r["occurred_at"], date=date)
                 else:
                     t = Transfer("large_transfer",
-                                 channel=Path(dest.replace("\\", "/")).parent.as_posix(),
+                                 channel=Path(target.replace("\\", "/")).parent.as_posix(),
                                  file_name=name, file_path=src, size_bytes=int(size),
-                                 destination=dest,
-                                 occurred_at=r["occurred_at"], date=date)
+                                 destination=target,
+                                 occurred_at=r["occurred_at"],
+                                 details={"source": r["event_type"]}, date=date)
                 if self._log(t):
                     found.append(t)
         return found

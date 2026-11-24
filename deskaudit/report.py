@@ -54,7 +54,7 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
                 "app": r["app"] or "",
                 "at": r["occurred_at"] or "",
             }
-            for r in db.transfers_for_date(date, limit=20)
+            for r in db.transfers_for_date(date, limit=None)
         ]
     except Exception:
         tcounts, trows = {}, []
@@ -197,6 +197,12 @@ def render_text(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def _md_cell(value) -> str:
+    """Escape a value for a Markdown table cell: a `|` in a window title
+    or file name would otherwise break the table."""
+    return str(value or "").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
 def render_markdown(summary: dict) -> str:
     lines = [
         f"# DeskAudit — {summary['date']}",
@@ -212,7 +218,7 @@ def render_markdown(summary: dict) -> str:
     ]
     for item in summary["top_apps"]:
         lines.append(
-            f"| {item['app']} | {item['title']} | "
+            f"| {_md_cell(item['app'])} | {_md_cell(item['title'])} | "
             f"{format_duration(item['active_seconds'])} | {item['sessions']} |"
         )
     lines += ["", "## File events", ""]
@@ -231,7 +237,7 @@ def render_markdown(summary: dict) -> str:
     ]
     for item in b.get("top_domains", []):
         lines.append(
-            f"| {item['domain']} | {item['category']} | "
+            f"| {_md_cell(item['domain'])} | {_md_cell(item['category'])} | "
             f"{format_duration(item['active_seconds'])} | {item['sessions']} |"
         )
     if b.get("searches"):
@@ -248,7 +254,7 @@ def render_markdown(summary: dict) -> str:
     for p in summary.get("projects", []):
         goal = f"{format_duration(p['goal_minutes'] * 60)} ({p.get('goal_percent', 0)}%)" if p.get("goal_minutes") else "-"
         lines.append(
-            f"| {p['project']} | {format_duration(p['active_seconds'])} | "
+            f"| {_md_cell(p['project'])} | {format_duration(p['active_seconds'])} | "
             f"{format_duration(p['app_seconds'])} | {format_duration(p['browser_seconds'])} | "
             f"{p['file_events']} | {p['visits']} | {goal} |"
         )
@@ -271,8 +277,8 @@ def render_markdown(summary: dict) -> str:
                   "|---|---|---|---|---:|"]
         for row in tr.get("rows", []):
             size = f"{round(row['size'] / 1024 / 1024, 1)} MB" if row.get("size") else "-"
-            lines.append(f"| {row['at']} | {row['type']} | {row['file'] or row['channel']} | "
-                         f"{row['destination']} | {size} |")
+            lines.append(f"| {row['at']} | {row['type']} | {_md_cell(row['file'] or row['channel'])} | "
+                         f"{_md_cell(row['destination'])} | {size} |")
     else:
         lines.append("- No data transfers recorded.")
     return "\n".join(lines) + "\n"

@@ -27,6 +27,23 @@ def _pct(part: float, whole: float) -> int:
     return round(100 * part / whole) if whole else 0
 
 
+_TRANSFER_LABELS = {"usb_copy": "USB-তে কপি", "usb_insert": "USB লাগানো",
+                    "usb_remove": "USB খোলা", "cloud": "ক্লাউড",
+                    "email": "ইমেইল", "message": "মেসেজ", "print": "প্রিন্ট",
+                    "sensitive_copy": "গুরুত্বপূর্ণ ফোল্ডার থেকে বাইরে",
+                    "large_transfer": "বড় ট্রান্সফার"}
+
+
+def _transfer_parts(counts: dict) -> list[str]:
+    parts = []
+    for kind in ("usb_copy", "usb_insert", "usb_remove", "cloud", "email",
+                 "message", "print", "sensitive_copy", "large_transfer"):
+        c = counts.get(kind, {})
+        if c.get("count"):
+            parts.append(f"{_TRANSFER_LABELS[kind]} {c['count']}টি")
+    return parts
+
+
 def _delta_text(now: float, before: float, label: str) -> str:
     if not before:
         return ""
@@ -129,16 +146,7 @@ def generate_daily_summary(db, date: str | None = None, tagger=None) -> dict:
     tr = s.get("transfers", {})
     if tr.get("total"):
         counts = tr.get("counts", {})
-        parts = []
-        labels = {"usb_copy": "USB-তে কপি", "usb_insert": "USB লাগানো",
-                  "cloud": "ক্লাউড", "email": "ইমেইল", "message": "মেসেজ",
-                  "print": "প্রিন্ট", "sensitive_copy": "গুরুত্বপূর্ণ ফোল্ডার থেকে বাইরে",
-                  "large_transfer": "বড় ট্রান্সফার", "usb_remove": "USB খোলা"}
-        for kind in ("usb_copy", "usb_insert", "cloud", "email", "message",
-                     "print", "sensitive_copy", "large_transfer"):
-            c = counts.get(kind, {})
-            if c.get("count"):
-                parts.append(f"{labels[kind]} {c['count']}টি")
+        parts = _transfer_parts(counts)
         sections.append({"title": "ডেটা ট্রান্সফার",
                          "text": f"আজ মোট {tr['total']}টি ট্রান্সফার ইভেন্ট: " + ", ".join(parts) + "।"})
         if counts.get("sensitive_copy", {}).get("count"):
@@ -228,7 +236,7 @@ def generate_weekly_summary(db, end: str | None = None, days: int = 7,
          "text": f"সপ্তাহের টপ প্রজেক্ট {top_project[0] or '—'} — {format_duration(top_project[1])}।" if top_project[0] else "কোনো প্রজেক্টে কাজ হয়নি।"},
         {"title": "ডেটা ট্রান্সফার",
          "text": (f"সপ্তাহে মোট {week_transfer_total}টি ট্রান্সফার ইভেন্ট: "
-                  + ", ".join(f"{k} {c['count']}টি" for k, c in sorted(week_transfers.items()) if c["count"])
+                  + ", ".join(_transfer_parts(week_transfers))
                   + "।"
                   if week_transfer_total else "সপ্তাহে কোনো ডেটা ট্রান্সফার ধরা পড়েনি।")},
         {"title": "ট্রেন্ড",

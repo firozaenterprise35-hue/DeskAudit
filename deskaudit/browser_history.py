@@ -87,6 +87,7 @@ CHROMIUM_LAYOUT: list[tuple[str, str, str]] = [
     ("Edge", "chromium", r"Microsoft\Edge\User Data"),
     ("Brave", "chromium", r"BraveSoftware\Brave-Browser\User Data"),
     ("Opera", "chromium", r"Opera Software\Opera Stable"),
+    ("Opera GX", "chromium", r"Opera Software\Opera GX Stable"),
     ("Vivaldi", "chromium", r"Vivaldi\User Data"),
 ]
 
@@ -102,7 +103,7 @@ def discover_profiles() -> list[BrowserProfile]:
         # (where "\" is not a path separator) for testing.
         base = local.joinpath(*rel.split("\\"))
         # Opera stores History directly under its folder, not under a profile.
-        if browser == "Opera":
+        if browser.startswith("Opera"):
             hist = base / "History"
             if hist.exists():
                 profiles.append(BrowserProfile(browser, engine, "Default", hist))
@@ -346,18 +347,19 @@ def read_firefox_bookmarks(places_path: Path) -> list[dict]:
 
 
 def read_chromium_bookmarks(user_data_dir: Path) -> list[dict]:
-    """Chromium Bookmarks is JSON, not SQLite. Returns title + URL."""
+    """Chromium Bookmarks is JSON, not SQLite. Returns title + URL.
+
+    Reads every profile folder (Default, Profile 1, ...) and a
+    root-level Bookmarks file (Opera keeps it next to History)."""
     import json
 
     out: list[dict] = []
-    for profile in ("Default",):
-        path = user_data_dir / profile / "Bookmarks"
-        if not path.exists():
-            continue
+
+    def _read_file(path: Path) -> None:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            continue
+            return
 
         def walk(node):
             if isinstance(node, dict):
@@ -367,7 +369,26 @@ def read_chromium_bookmarks(user_data_dir: Path) -> list[dict]:
                     walk(child)
 
         walk(data.get("roots", {}))
+
+    # Opera-style: Bookmarks directly under the user data dir.
+    _read_file(user_data_dir / "Bookmarks")
+    if user_data_dir.is_dir():
+        for child in sorted(user_data_dir.iterdir()):
+            if child.is_dir() and (child.name == "Default"
+                                   or child.name.startswith("Profile ")):
+                _read_file(child / "Bookmarks")
     return out
+
+
+def read_profile_bookmarks(profile: BrowserProfile) -> list[dict]:
+    """Bookmarks for one discovered profile, whatever its engine."""
+    if profile.engine == "firefox":
+        return read_firefox_bookmarks(profile.history_path)
+    # Chromium: History is <user data>/<profile>/History, except Opera
+    # where it is <user data>/History directly.
+    user_data = (profile.history_path.parent if profile.browser.startswith("Opera")
+                 else profile.history_path.parent.parent)
+    return read_chromium_bookmarks(user_data)
 
 
 # ---------------------------------------------------------------------------

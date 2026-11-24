@@ -1,12 +1,12 @@
 ; DeskAudit installer — Inno Setup 6 script.
 ; Build the exe first (build_exe.bat), then compile this with:
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\DeskAudit.iss
-; Output: installer\Output\DeskAudit-Setup-11.0.exe
+; Output: installer\Output\DeskAudit-Setup-11.1.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 
 #define MyAppName "DeskAudit"
-#define MyAppVersion "11.0"
+#define MyAppVersion "11.1"
 #define MyAppPublisher "Firoza"
 #define MyAppExeName "DeskAudit.exe"
 
@@ -32,7 +32,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startup"; Description: "Start DeskAudit when Windows starts"; GroupDescription: "Startup:"; Flags: unchecked
+Name: "startup"; Description: "Start DeskAudit when Windows starts"; GroupDescription: "Startup:"; Flags: checked
 
 [Files]
 Source: "..\dist\DeskAudit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -40,6 +40,7 @@ Source: "..\dist\DeskAudit\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 [Icons]
 Name: "{group}\DeskAudit"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--hidden"; WorkingDir: "{app}"
 Name: "{group}\DeskAudit Dashboard"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--open-dashboard"; WorkingDir: "{app}"
+Name: "{group}\Schedule 9pm daily job"; Filename: "{app}\schedule_summary.bat"; WorkingDir: "{app}"
 Name: "{group}\Stop DeskAudit"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--stop"; WorkingDir: "{app}"
 Name: "{group}\Uninstall DeskAudit"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\DeskAudit"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--hidden"; WorkingDir: "{app}"; Tasks: desktopicon

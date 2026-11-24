@@ -154,19 +154,33 @@ CATEGORY_MAP: dict[str, tuple[str, bool]] = {
 }
 
 
+def _domain_matches(key: str, domain: str) -> bool:
+    """Label-boundary domain match. A key ending in "." is a family
+    prefix ("outlook." matches outlook.live.com and mail.outlook.com);
+    any other key is a full domain ("box.com" must not match
+    "mybox.com", "github.com" must match "gist.github.com")."""
+    key = (key or "").lower()
+    d = (domain or "").lower()
+    if not key or not d:
+        return False
+    if key.endswith("."):
+        return d.startswith(key) or ("." + key) in d
+    return d == key or d.endswith("." + key)
+
+
 def classify_domain(domain: str, productive_domains=None, distracting_domains=None) -> tuple[str, bool]:
     """Return (category, is_productive). User config overrides built-ins."""
     d = (domain or "").lower()
     if productive_domains:
         for item in productive_domains:
-            if item.lower() in d:
+            if _domain_matches(item, d):
                 return ("work", True)
     if distracting_domains:
         for item in distracting_domains:
-            if item.lower() in d:
+            if _domain_matches(item, d):
                 return ("distraction", False)
     for key, value in CATEGORY_MAP.items():
-        if key in d:
+        if _domain_matches(key, d):
             return value
     if d.endswith(".gov") or d.endswith(".edu") or d.endswith(".ac.bd"):
         return ("learning", True)

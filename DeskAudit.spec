@@ -95,3 +95,14 @@ for _name in ("config.yaml", "projects.yaml"):
     _dst = _os.path.join(_exe_dir, _name)
     if _os.path.exists(_src):
         _shutil.copyfile(_src, _dst)
+
+# Ship the helper .bat files next to the exe too — the README tells
+# users to double-click schedule_summary.bat (9pm job) and
+# usb_write_protect.bat (USB write block), but the installer only ships
+# dist/DeskAudit/*, so without this copy those features are impossible
+# on an installed PC.
+for _name in ("schedule_summary.bat", "unschedule_summary.bat",
+              "usb_write_protect.bat", "usb_write_allow.bat"):
+    _src = _os.path.join(SPECPATH, _name)
+    if _os.path.exists(_src):
+        _shutil.copyfile(_src, _os.path.join(_exe_dir, _name))

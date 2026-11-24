@@ -1,7 +1,9 @@
 // DeskAudit Tab Reporter — Manifest V3 service worker.
 // Sends ONLY the active tab's URL + title to the local DeskAudit agent.
 // No passwords, no page content, no cookies. Localhost only.
-// Runs every 5 seconds and whenever the active tab changes.
+// The alarm below is capped by Chrome at a 1-minute minimum (0.0833 is
+// clamped to 1), so the periodic report runs every ~60 s; tab switches
+// are still instant via onActivated / onUpdated.
 
 const ENDPOINT = "http://127.0.0.1:8765/tab";
 
@@ -27,6 +29,6 @@ chrome.tabs.onActivated.addListener(reportActiveTab);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab.active && changeInfo.url) reportActiveTab();
 });
-chrome.alarms.create("deskaudit-poll", { periodInMinutes: 0.0833 }); // ~5s
+chrome.alarms.create("deskaudit-poll", { periodInMinutes: 1 }); // Chrome enforces a 1-minute minimum
 chrome.alarms.onAlarm.addListener(reportActiveTab);
 reportActiveTab();

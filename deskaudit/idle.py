@@ -22,7 +22,10 @@ def get_idle_seconds() -> float:
         info.cbSize = ctypes.sizeof(info)
         if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
             return 0.0
-        millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+        # GetTickCount64 (not GetTickCount): the 32-bit counter wraps
+        # every ~49.7 days of continuous uptime, after which idle reads 0.
+        tick = ctypes.windll.kernel32.GetTickCount64()
+        millis = tick - info.dwTime
         return max(0.0, millis / 1000.0)
     except Exception:
         return 0.0

@@ -62,6 +62,26 @@ from deskaudit.report import generate_report
 from deskaudit.utils import format_duration, today_str
 
 
+def _refresh_before_summary(db: Database, config: Config, tagger: Tagger) -> None:
+    """Poll browser history + scan transfers before an alerts check or a
+    summary, so a one-off command sees today's data even when the agent
+    isn't running (otherwise --alerts / --evening-job report an empty day
+    with no warning). Best-effort: failures are logged, never fatal."""
+    if config.browser_enabled:
+        try:
+            browser = BrowserTracker(db, config, tagger=tagger)
+            browser.poll_history()
+        except Exception as exc:
+            print(f"(Browser history poll failed: {exc})")
+    if (config.transfers or {}).get("enabled", True):
+        try:
+            from deskaudit.transfers import TransferMonitor
+
+            TransferMonitor(db, config.transfers).scan_today()
+        except Exception as exc:
+            print(f"(Transfer scan failed: {exc})")
+
+
 def load_tagger(config: Config) -> Tagger:
     """Load projects.yaml next to config.yaml; fall back to empty tagger."""
     projects_path = Path(config.project_root) / "projects.yaml"
@@ -128,26 +148,46 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     last_browser_poll = 0.0
     last_alert_check = 0.0
     last_transfer_scan = 0.0
+    # Coerce once at startup: a bad poll_seconds used to raise inside
+    # the loop condition every 5 s and kill the agent silently.
+    try:
+        transfer_poll = int((config.transfers or {}).get("poll_seconds", 60))
+    except (TypeError, ValueError):
+        log.warning("Bad transfers.poll_seconds — using 60s.")
+        transfer_poll = 60
+    if transfer_poll < 5:
+        transfer_poll = 5
+
+    def _safe_stop(name, fn):
+        try:
+            fn()
+        except Exception as exc:
+            log.warning("Stop %s failed: %s", name, exc)
 
     def shutdown(*_args):
         log.info("Shutting down, closing current session...")
-        tracker.stop()
-        browser.stop()
+        _safe_stop("tracker", tracker.stop)
+        _safe_stop("browser", browser.stop)
         if receiver is not None:
-            receiver.stop()
+            _safe_stop("receiver", receiver.stop)
         if gate is not None:
-            gate.stop()
+            _safe_stop("gate", gate.stop)
         if dashboard_server is not None:
-            dashboard_server.stop()
-        watcher.stop()
-        db.close()
+            _safe_stop("dashboard", dashboard_server.stop)
+        _safe_stop("watcher", watcher.stop)
+        _safe_stop("db", db.close)
         raise SystemExit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, shutdown)
 
-    if watcher.start():
+    try:
+        watcher_started = watcher.start()
+    except Exception as exc:
+        log.warning("File watcher failed to start (agent keeps running): %s", exc)
+        watcher_started = False
+    if watcher_started:
         log.info("Watching folders: %s", ", ".join(watcher.watched))
     else:
         log.warning("File watcher did not start — check watch_folders / watchdog install.")
@@ -196,8 +236,9 @@ def run_agent(config: Config, log: logging.Logger) -> int:
 
             gate = start_secret_gate(config.secret_gate, "http://127.0.0.1:8000/", log)
             if gate is not None:
-                log.info("Secret gate on: %s desktop clicks, then type %s to open the dashboard.",
-                         gate.clicks_needed, gate.code)
+                # Never log the code itself (README promises nothing
+                # about the gate is logged).
+                log.info("Secret gate on: %s desktop clicks, then the code.", gate.clicks_needed)
         except Exception as exc:  # the gate must never crash the agent
             log.warning("Secret gate did not start: %s", exc)
 
@@ -208,22 +249,36 @@ def run_agent(config: Config, log: logging.Logger) -> int:
             if pause_file.exists():
                 time.sleep(config.poll_interval_seconds)
                 continue
-            window = tracker.tick(config.poll_interval_seconds)
-            from deskaudit.idle import is_idle
+            window = None
+            browser_info = None
+            try:
+                window = tracker.tick(config.poll_interval_seconds)
+            except Exception as exc:
+                # A DB error here used to kill the whole agent silently
+                # (windowed exe: traceback goes to devnull). Log and
+                # keep polling — the next tick usually succeeds.
+                log.warning("App tracking tick failed: %s", exc)
+            try:
+                from deskaudit.idle import is_idle
 
-            browser_info = browser.tick(window, is_idle(config.idle_threshold_seconds),
-                                        config.poll_interval_seconds)
+                browser_info = browser.tick(window, is_idle(config.idle_threshold_seconds),
+                                            config.poll_interval_seconds) if window else None
+            except Exception as exc:
+                log.warning("Browser tick failed: %s", exc)
             now_ts = time.time()
             if config.browser_enabled and now_ts - last_browser_poll >= config.browser_poll_seconds:
                 last_browser_poll = now_ts
-                counts = browser.poll_history()
+                try:
+                    counts = browser.poll_history()
+                except Exception as exc:
+                    counts = {"visits": 0, "downloads": 0, "searches": 0}
+                    log.warning("Browser history poll failed: %s", exc)
                 if counts["visits"] or counts["downloads"]:
                     log.info("Browser history: %s new visits, %s downloads, %s searches",
                              counts["visits"], counts["downloads"], counts["searches"])
             # Data transfers: scan every poll_seconds (USB / print / browser / files).
             if (transfer_monitor is not None
-                    and now_ts - last_transfer_scan >= int(
-                        (config.transfers or {}).get("poll_seconds", 60))):
+                    and now_ts - last_transfer_scan >= transfer_poll):
                 last_transfer_scan = now_ts
                 try:
                     counts = transfer_monitor.scan_today()
@@ -251,38 +306,45 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 log.info("Browser: %s — %s [%s]", browser_info["browser"],
                          browser_info["title"] or "(no title)",
                          browser_info["domain"] or "title only")
-            else:
+            elif window is not None:
                 log.info("Active: %s — %s", window.app_name, window.title or "(no title)")
             time.sleep(config.poll_interval_seconds)
     except SystemExit:
         return 0
     finally:
-        tracker.stop()
-        browser.stop()
+        _safe_stop("tracker", tracker.stop)
+        _safe_stop("browser", browser.stop)
         if receiver is not None:
-            receiver.stop()
+            _safe_stop("receiver", receiver.stop)
         if gate is not None:
-            gate.stop()
+            _safe_stop("gate", gate.stop)
         if dashboard_server is not None:
-            dashboard_server.stop()
-        watcher.stop()
-        db.close()
+            _safe_stop("dashboard", dashboard_server.stop)
+        _safe_stop("watcher", watcher.stop)
+        _safe_stop("db", db.close)
     return 0
 
 
 def _ensure_std_streams() -> None:
     """Windowed exe (console=False, v10.4) has no console: PyInstaller
-    sets sys.stdout/sys.stderr to None. Point them at devnull so print()
-    and the log StreamHandler never crash — the log file keeps working,
-    and the dashboard shows the same information."""
+    sets sys.stdout/sys.stderr to None. Point them at a file next to the
+    log (data/deskaudit-stdout.log) instead of devnull — one-shot CLI
+    output (--report, --alerts, --transfers, ...) used to vanish
+    completely, and the README's claim that it went "to the log file"
+    was false for printed output."""
     if sys.stdout is None or sys.stderr is None:
-        import os
+        try:
+            out_path = _app_dir() / "data" / "deskaudit-stdout.log"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            stream = open(out_path, "a", encoding="utf-8")
+        except Exception:
+            import os
 
-        devnull = open(os.devnull, "w", encoding="utf-8")
+            stream = open(os.devnull, "w", encoding="utf-8")
         if sys.stdout is None:
-            sys.stdout = devnull
+            sys.stdout = stream
         if sys.stderr is None:
-            sys.stderr = devnull
+            sys.stderr = stream
 
 
 def _fix_console_encoding() -> None:
@@ -342,13 +404,17 @@ def _stop_running_agent() -> int:
                 except ValueError:
                     continue
                 if pid != mine:
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                   capture_output=True, timeout=30)
-                    stopped += 1
+                    r = subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                       capture_output=True, timeout=30)
+                    if r.returncode == 0:
+                        stopped += 1
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"Could not stop DeskAudit: {exc}")
         return 1
-    print("DeskAudit stopped." if stopped else "DeskAudit is not running.")
+    if stopped:
+        print("DeskAudit stopped.")
+    else:
+        print("DeskAudit is not running (or could not be stopped — try running as administrator).")
     return 0
 
 
@@ -480,7 +546,12 @@ def main(argv: list[str] | None = None) -> int:
                                  alerts_settings=config.alerts,
                                  config_path=Path(config_path),
                                  transfers_settings=config.transfers)
-        url = server.start()
+        try:
+            url = server.start()
+        except OSError:
+            print(f"Dashboard could not start on port {args.port} — already running? "
+                  "Open http://127.0.0.1:8000/ directly, or use another port with --port.")
+            return 1
         print(f"DeskAudit dashboard: {url}")
         print("Local only — press Ctrl+C to stop.")
         if args.host not in ("127.0.0.1", "localhost"):
@@ -508,6 +579,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Backup saved: {dest}")
         except FileNotFoundError:
             print("No database yet — nothing to back up. Run the agent once first.")
+            return 1
+        except (ValueError, OSError) as exc:
+            print(f"Backup failed: {exc}")
             return 1
         return 0
 
@@ -537,6 +611,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Current DB saved first as: {safety}")
         except FileNotFoundError:
             print(f"Backup not found: {backup_path}")
+            return 1
+        except ValueError:
+            print(f"Not a DeskAudit database: {backup_path}")
+            return 1
+        except PermissionError:
+            print("Restore failed — is the agent still running? Stop it first, then restore.")
+            return 1
+        except OSError as exc:
+            print(f"Restore failed: {exc}")
             return 1
         return 0
 
@@ -579,6 +662,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sync_projects_to_db(db, tagger)
             merge_db_overrides(db, tagger)
+            # Fresh data first: poll browser history + scan transfers, or
+            # the job reports an empty day when the agent isn't running.
+            _refresh_before_summary(db, config, tagger)
             try:
                 dest = make_backup(config.db_path, config.project_root,
                                    keep_days=config.backup_keep_days,
@@ -586,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Backup saved: {dest}")
             except FileNotFoundError:
                 print("No database yet — backup skipped.")
+            except (ValueError, OSError) as exc:
+                print(f"Backup failed (job continues): {exc}")
             found = check_alerts(db, today_str(), settings=config.alerts, tagger=tagger,
                                  transfer_settings=config.transfers)
             new = save_alerts(db, found)
@@ -609,6 +697,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sync_projects_to_db(db, tagger)
             merge_db_overrides(db, tagger)
+            # Fresh data first (same reason as the evening job).
+            _refresh_before_summary(db, config, tagger)
             found = check_alerts(db, date, settings=config.alerts, tagger=tagger,
                                  transfer_settings=config.transfers)
             new = save_alerts(db, found)
@@ -689,13 +779,19 @@ def main(argv: list[str] | None = None) -> int:
                     from deskaudit.llm_summary import llm_narrative
 
                     text, source = llm_narrative(result, config.llm, kind="weekly", explicit=True)
-                    path = Path(config.project_root) / "reports" / f"{result['end']}-weekly.md"
-                    path.write_text(
-                        f"# DeskAudit — সাপ্তাহিক রিভিউ ({result['start']} থেকে {result['end']})\n\n"
-                        f"{text}\n\n---\n\n*Source: {source}. Local rule-based sections are in the same file's data; "
-                        "only aggregated stats were sent to the LLM.*\n",
-                        encoding="utf-8")
-                    result["narrative"] = text
+                    # Append the LLM text as its own section — the old
+                    # code overwrote the file and destroyed the detailed
+                    # local sections (projects/files/browser/transfers).
+                    # Only when the LLM actually answered: on fallback
+                    # the text IS the local narrative, already in the file.
+                    if source.startswith("llm"):
+                        path = Path(config.project_root) / "reports" / f"{result['end']}-weekly.md"
+                        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+                        path.write_text(
+                            existing.rstrip() + "\n\n## LLM সামারি\n\n"
+                            f"{text}\n\n---\n\n*Source: {source}. Only aggregated stats were sent to the LLM.*\n",
+                            encoding="utf-8")
+                        result["narrative"] = result["narrative"] + "\n\n## LLM সামারি\n\n" + text
             else:
                 result, path = save_daily_summary(
                     db, args.date, reports_dir=Path(config.project_root) / "reports",
@@ -705,12 +801,14 @@ def main(argv: list[str] | None = None) -> int:
                     from deskaudit.llm_summary import llm_narrative
 
                     text, source = llm_narrative(result, config.llm, kind="daily", explicit=True)
-                    path = Path(config.project_root) / "reports" / f"{result['date']}-summary.md"
-                    path.write_text(
-                        f"# DeskAudit — ডেইলি সামারি ({result['date']})\n\n"
-                        f"{text}\n\n---\n\n*Source: {source}. Only aggregated stats were sent to the LLM.*\n",
-                        encoding="utf-8")
-                    result["narrative"] = text
+                    if source.startswith("llm"):
+                        path = Path(config.project_root) / "reports" / f"{result['date']}-summary.md"
+                        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+                        path.write_text(
+                            existing.rstrip() + "\n\n## LLM সামারি\n\n"
+                            f"{text}\n\n---\n\n*Source: {source}. Only aggregated stats were sent to the LLM.*\n",
+                            encoding="utf-8")
+                        result["narrative"] = result["narrative"] + "\n\n## LLM সামারি\n\n" + text
         finally:
             db.close()
         print(result["narrative"])
@@ -745,21 +843,28 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.project_add:
         # Append a minimal project to projects.yaml (keeps existing file intact).
+        # Built with yaml.safe_dump so a quote in the name/folder cannot
+        # produce invalid YAML that wipes all projects on the next load.
+        import yaml  # type: ignore
+
         projects_path = Path(config.project_root) / "projects.yaml"
-        entry = [f'  - name: "{args.project_add}"']
+        entry: dict = {"name": args.project_add, "priority": 80}
         if args.goal:
-            entry.append(f"    daily_goal_minutes: {args.goal}")
-        entry.append("    priority: 80")
+            entry["daily_goal_minutes"] = args.goal
         if args.folder:
-            entry.append(f'    folders:\n      - "{args.folder}"')
+            entry["folders"] = [args.folder]
         if args.domain:
-            entry.append(f'    domains:\n      - "{args.domain}"')
+            entry["domains"] = [args.domain]
         if args.app:
-            entry.append(f'    apps:\n      - "{args.app}"')
+            entry["apps"] = [args.app]
+        dumped = yaml.safe_dump([entry], allow_unicode=True,
+                                default_flow_style=False, sort_keys=False)
+        indented = "\n".join("  " + line if line else line
+                             for line in dumped.rstrip("\n").split("\n"))
         text = projects_path.read_text(encoding="utf-8") if projects_path.exists() else "default_project: \"Untagged\"\n\nprojects:\n"
         if "projects:" not in text:
             text += "\nprojects:\n"
-        projects_path.write_text(text.rstrip() + "\n" + "\n".join(entry) + "\n", encoding="utf-8")
+        projects_path.write_text(text.rstrip() + "\n" + indented + "\n", encoding="utf-8")
         print(f"Added project '{args.project_add}' to projects.yaml. Run --retag to apply it to old rows.")
         return 0
 
@@ -792,8 +897,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.suggest_projects:
-        from deskaudit.projects import Tagger as _Tagger
-
         db = Database(config.db_path)
         try:
             date = args.date or today_str()
@@ -830,7 +933,8 @@ def main(argv: list[str] | None = None) -> int:
             db.close()
         print(f"Browser audit: {counts['profiles']} profiles, "
               f"{counts['visits']} visits, {counts['searches']} searches, "
-              f"{counts['downloads']} downloads imported.")
+              f"{counts['downloads']} downloads imported, "
+              f"{counts.get('bookmarks', 0)} bookmarks found.")
         print("Run: python main.py --report  to see them in the daily report.")
         return 0
 
@@ -867,6 +971,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Browser history: {counts['visits']} new visits, "
                       f"{counts['downloads']} downloads, {counts['searches']} searches")
                 browser.stop()
+            if (config.transfers or {}).get("enabled", True):
+                from deskaudit.transfers import TransferMonitor
+
+                tcounts = TransferMonitor(db, config.transfers).scan_today()
+                print(f"Transfers: {tcounts}")
         finally:
             db.close()
         return 0

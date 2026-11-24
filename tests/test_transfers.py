@@ -84,8 +84,10 @@ def test_log_transfer_dedup():
     # Same (date, type, channel, file, time) -> ignored.
     assert db.log_transfer(date, "usb_copy", "E:", "a.xlsx", r"E:\a.xlsx",
                            1234, "E:", occurred_at=when) is False
-    assert db.has_transfer(date, "usb_copy", "a.xlsx") is True
-    assert db.has_transfer(date, "usb_copy", "other.xlsx") is False
+    assert db.has_transfer(date, "usb_copy", r"E:\a.xlsx") is True
+    assert db.has_transfer(date, "usb_copy", r"E:\other.xlsx") is False
+    # Same file NAME in another folder is a different file (full-path match).
+    assert db.has_transfer(date, "usb_copy", r"F:\a.xlsx") is False
     counts = db.transfer_counts(date)
     assert counts["usb_copy"] == {"count": 1, "bytes": 1234}, counts
     rows = db.transfers_for_date(date)
@@ -103,11 +105,16 @@ def seed_browser_and_files(tmp: Path):
                                     "drive.google.com", "My Drive", "work", True,
                                     base, project="Office")
     db.close_browser_session(bsid, base + timedelta(minutes=20), 1200, 1200, 0)
-    # Gmail session 30 s (< 60s minimum) -> NO row
+    # Gmail session 30 s (< 60s minimum) -> NO row — and the history
+    # fallback must NOT log it either, even though a visit row exists
+    # for the same domain (the session covers the domain first).
     bsid = db.start_browser_session("Chrome", "https://mail.google.com/mail/u/0/",
                                     "mail.google.com", "Gmail", "email", True,
                                     base + timedelta(hours=1), project="Office")
     db.close_browser_session(bsid, base + timedelta(hours=1), 30, 30, 0)
+    db.log_browser_visit("Chrome", "https://mail.google.com/mail/u/0/",
+                         "mail.google.com", "Gmail",
+                         base + timedelta(hours=1, minutes=1), project="Office")
     # WhatsApp Web visit only (history fallback) -> message row
     db.log_browser_visit("Chrome", "https://web.whatsapp.com/", "web.whatsapp.com",
                          "WhatsApp", base + timedelta(hours=2), project="Office")

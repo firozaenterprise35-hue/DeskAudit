@@ -114,13 +114,16 @@ def prune_backups(out_dir: Path, keep_days: int = DEFAULT_KEEP_DAYS,
     from datetime import timedelta
 
     deleted: list[Path] = []
-    files = sorted(out_dir.glob("deskaudit-*.db"), key=lambda p: p.stat().st_mtime)
+    # Only dated backup files (deskaudit-YYYY-MM-DD-....db) — the restore
+    # safety copies (deskaudit-before-restore-*.db) must NOT be pruned,
+    # or the "undo a restore" net expires under normal retention.
+    files = sorted(out_dir.glob("deskaudit-2*.db"), key=lambda p: p.stat().st_mtime)
     cutoff = (datetime.now().astimezone() - timedelta(days=keep_days)).timestamp()
     for p in files:
         if p.stat().st_mtime < cutoff:
             p.unlink(missing_ok=True)
             deleted.append(p)
-    files = [p for p in sorted(out_dir.glob("deskaudit-*.db"),
+    files = [p for p in sorted(out_dir.glob("deskaudit-2*.db"),
                                key=lambda p: p.stat().st_mtime) if p.exists()]
     while len(files) > keep_count:
         oldest = files.pop(0)
