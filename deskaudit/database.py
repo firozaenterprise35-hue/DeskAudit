@@ -867,5 +867,83 @@ class Database:
         return {r["transfer_type"]: {"count": int(r["n"] or 0),
                                      "bytes": int(r["b"] or 0)} for r in rows}
 
+    def delete_day(self, date: str) -> dict[str, int]:
+        """Delete one day's recorded activity (used by Telegram /clear).
+        Projects, overrides and kv_state are kept — only history goes.
+        Returns {table: rows deleted}."""
+        specs = [
+            ("app_sessions", "substr(started_at, 1, 10) = ?"),
+            ("browser_sessions", "substr(started_at, 1, 10) = ?"),
+            ("browser_visits", "substr(visited_at, 1, 10) = ?"),
+            ("browser_searches", "substr(searched_at, 1, 10) = ?"),
+            ("browser_downloads", "substr(started_at, 1, 10) = ?"),
+            ("file_events", "substr(occurred_at, 1, 10) = ?"),
+            ("transfers", "date = ?"),
+            ("alerts", "date = ?"),
+        ]
+        out: dict[str, int] = {}
+        try:
+            for table, where in specs:
+                cur = self.conn.execute(f"DELETE FROM {table} WHERE {where}", (date,))
+                out[table] = int(cur.rowcount or 0)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return out
+
+    def reset_data(self) -> dict[str, int]:
+        """Delete ALL recorded activity (used by Telegram /reset, after a
+        backup). Projects, overrides and kv_state are kept: kv_state
+        holds the Telegram update offset and browser watermarks, and
+        wiping it would make the bot re-answer old commands and the
+        browser tracker re-import history. Returns {table: rows}."""
+        tables = ["app_sessions", "browser_sessions", "browser_visits",
+                  "browser_searches", "browser_downloads", "file_events",
+                  "transfers", "alerts"]
+        out: dict[str, int] = {}
+        try:
+            for table in tables:
+                cur = self.conn.execute(f"DELETE FROM {table}")
+                out[table] = int(cur.rowcount or 0)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return out
+
+    def search_today(self, date: str, query: str, limit: int = 10) -> dict:
+        """Case-insensitive search of one day: file names, window titles
+        and browser search queries containing `query`."""
+        like = f"%{query}%"
+        try:
+            files = self.conn.execute(
+                """SELECT event_type, path, occurred_at FROM file_events
+                   WHERE substr(occurred_at, 1, 10) = ? AND path LIKE ?
+                   ORDER BY occurred_at DESC LIMIT ?""",
+                (date, like, limit),
+            ).fetchall()
+        except Exception:
+            files = []
+        try:
+            titles = self.conn.execute(
+                """SELECT app_name, window_title, started_at FROM app_sessions
+                   WHERE substr(started_at, 1, 10) = ? AND window_title LIKE ?
+                   ORDER BY started_at DESC LIMIT ?""",
+                (date, like, limit),
+            ).fetchall()
+        except Exception:
+            titles = []
+        try:
+            searches = self.conn.execute(
+                """SELECT query, searched_at FROM browser_searches
+                   WHERE substr(searched_at, 1, 10) = ? AND query LIKE ?
+                   ORDER BY searched_at DESC LIMIT ?""",
+                (date, like, limit),
+            ).fetchall()
+        except Exception:
+            searches = []
+        return {"files": files, "titles": titles, "searches": searches}
+
     def close(self) -> None:
         self.conn.close()

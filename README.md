@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -268,6 +268,29 @@ shared report summary, so Telegram and the dashboard can never drift):
   Only your chat id may command the bot; other chats are ignored.
   When the day has no recorded work yet, /status says so plainly and
   reminds you to check that the agent is running.
+
+**Remote control (v12.2)** — the same bot also controls the agent.
+Only the owner's chat id may use these; others are ignored. The agent
+must be running on the PC (it polls Telegram every ~30 s).
+- Read-only: **/week** (7-day summary), **/apps**, **/projects**,
+  **/transfers**, **/alerts**, **/files**, **/search <word>**,
+  **/report** (today's report sent as a file), **/menu** (inline
+  buttons for the safe commands — nothing destructive is one tap away).
+- Pause / silence: **/pause** (tracking stops; the bot still answers,
+  so /resume wakes it), **/resume**, **/mute [minutes]** / **/unmute**
+  (silence alerts + digests), **/digest <minutes|off>** (change the
+  digest interval, saved to config.local.yaml).
+- PC control: **/lock** (lock Windows), **/close <app>**, **/freeze
+  <app>** / **/unfreeze** (suspend / resume a running app, Windows
+  only). DeskAudit itself and Windows system processes can never be
+  closed or frozen.
+- Data: **/clear [date]** (delete one day), **/reset** (delete all
+  recorded data — a backup is taken first; projects and settings
+  stay), **/backup** (back up now), **/goal <project> <minutes>**
+  (daily project goal, saved to projects.yaml + DB).
+- Safety: /close, /freeze, /clear and /reset always ask “নিশ্চিত?”
+  first and only run after you reply হ্যাঁ/yes or tap ✅ (the
+  confirmation expires after 5 minutes; reply না to cancel).
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -415,7 +438,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.1.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.2.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -454,17 +477,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.1-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.2-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.1.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.2.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.1.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.2.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

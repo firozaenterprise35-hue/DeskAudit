@@ -232,6 +232,7 @@ class Tagger:
     def empty(cls) -> "Tagger":
         return cls([], [], "Untagged")
 
+
     # -- overrides ------------------------------------------------------
     def _override_for(self, *, path: str = "", app: str = "", title: str = "",
                       domain: str = "", url: str = "") -> Override | None:
@@ -356,3 +357,33 @@ class Tagger:
                     "hint": "Add this title keyword to a project in projects.yaml",
                 })
         return suggestions
+
+
+def update_project_goal(path: str | Path, name: str, minutes: int) -> str:
+    """Set a project's daily_goal_minutes in projects.yaml (used by
+    Telegram /goal). Returns "updated" when the project existed,
+    "created" when a minimal entry was added. Raises ValueError on a
+    bad goal and FileNotFoundError when the file does not exist.
+    Like --project-add, the file is rewritten with yaml.safe_dump."""
+    import yaml  # type: ignore
+
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0:
+        raise ValueError("goal must be 0 or more minutes")
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"projects file not found: {path}")
+    with p.open(encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    projects = raw.get("projects", []) or []
+    found = False
+    for item in projects:
+        if isinstance(item, dict) and str(item.get("name", "")).lower() == name.lower():
+            item["daily_goal_minutes"] = minutes
+            found = True
+            break
+    if not found:
+        projects.append({"name": name, "daily_goal_minutes": minutes})
+        raw["projects"] = projects
+    with p.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, sort_keys=False, allow_unicode=True)
+    return "updated" if found else "created"

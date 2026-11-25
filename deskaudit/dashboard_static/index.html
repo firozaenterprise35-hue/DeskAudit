@@ -186,7 +186,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><span>Bot token <b id="telegramTokenStatus"></b></span><input id="set_telegram_bot_token" type="password" autocomplete="off" placeholder="নতুন টোকেন লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_telegram_clear_token" type="checkbox"> টোকেন মুছে ফেলুন</label></label>
       <label><span>Chat id</span><input id="set_telegram_chat_id" type="text" placeholder="যেমন 123456789"></label>
       <label><span>Command poll (seconds, 10–600)</span><input id="set_telegram_poll_seconds" type="number" min="10" max="600"></label>
-      <label><span>Digest (minutes, 5–1440)</span><input id="set_telegram_digest_minutes" type="number" min="5" max="1440"></label>
+      <label><span>Digest (minutes, 0 = off, 1–1440)</span><input id="set_telegram_digest_minutes" type="number" min="0" max="1440"></label>
       <label><input id="set_telegram_notify_critical" type="checkbox"> Critical অ্যালার্ট সাথে সাথে পাঠান</label>
     </div>
     <button id="testTelegramBtn" type="button">📩 Telegram পরীক্ষা বার্তা পাঠান</button><span id="telegramTestStatus"></span>

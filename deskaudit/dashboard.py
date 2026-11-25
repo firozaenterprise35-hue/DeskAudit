@@ -289,7 +289,7 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("transfers", "communication_alert_minutes"): (1, 1440),
     ("transfers", "large_transfer_mb"): (1, 100000),
     ("telegram", "poll_seconds"): (10, 600),
-    ("telegram", "digest_minutes"): (5, 1440),
+    ("telegram", "digest_minutes"): (0, 1440),  # 0 = digest off
     ("email", "smtp_port"): (1, 65535),
     ("email", "interval_minutes"): (5, 1440),
 }

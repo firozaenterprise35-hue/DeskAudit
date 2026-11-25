@@ -225,7 +225,12 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         try:
             from deskaudit.telegram import TelegramBot
 
-            telegram_bot = TelegramBot(db, config.telegram, log)
+            telegram_bot = TelegramBot(
+                db, config.telegram, log,
+                project_root=config.project_root,
+                config_path=config.project_root / "config.yaml",
+                projects_path=config.project_root / "projects.yaml",
+                tagger=tagger)
             if telegram_bot.configured:
                 log.info("Telegram bot on: digests every %s min, commands polled.",
                          telegram_bot.settings.get("digest_minutes", 60))
@@ -276,6 +281,16 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     try:
         while True:
             if pause_file.exists():
+                # Paused: no tracking, no digest, no email — but the
+                # bot still answers commands, so /resume can wake the
+                # agent. The digest timer is reset so resuming does
+                # not immediately send an empty digest.
+                if telegram_bot is not None:
+                    try:
+                        telegram_bot.poll_commands()
+                    except Exception as exc:
+                        log.warning("Telegram poll failed: %s", exc)
+                last_telegram_digest = time.time()
                 time.sleep(config.poll_interval_seconds)
                 continue
             window = None
