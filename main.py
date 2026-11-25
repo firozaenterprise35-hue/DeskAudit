@@ -551,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Send a test message to the configured Telegram chat")
     parser.add_argument("--telegram-now", action="store_true",
                         help="Send the current status to Telegram now")
+    parser.add_argument("--screenshot", default=None, metavar="PATH",
+                        help="Capture the screen as a PNG (Windows only) and save it to PATH")
     parser.add_argument("--email-test", action="store_true",
                         help="Send a test email to the configured address")
     parser.add_argument("--email-now", action="store_true",
@@ -849,6 +851,22 @@ def main(argv: list[str] | None = None) -> int:
                 size = f" ({round(r['size_bytes'] / 1024 / 1024, 1)} MB)" if r["size_bytes"] else ""
                 print(f"  {r['occurred_at'][11:16]} {r['transfer_type']} — "
                       f"{r['file_name'] or r['channel']} -> {r['destination']}{size}")
+        return 0
+
+    if args.screenshot:
+        from datetime import datetime as _dt
+
+        from deskaudit.screenshot import capture_screen
+
+        path = args.screenshot
+        if Path(path).is_dir() or not Path(path).suffix:
+            path = str(Path(path) / f"shot-{_dt.now().strftime('%Y%m%d-%H%M%S')}.png")
+        try:
+            out = capture_screen(path)
+        except Exception as exc:
+            print(f"Screenshot failed: {exc}")
+            return 1
+        print(f"Screenshot saved: {out} ({out.stat().st_size} bytes)")
         return 0
 
     if args.telegram_test or args.telegram_now:

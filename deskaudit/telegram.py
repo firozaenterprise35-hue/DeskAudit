@@ -149,6 +149,23 @@ def send_document(token: str, chat_id: str, path: str | Path,
     return bool(result and result.get("ok"))
 
 
+def send_photo(token: str, chat_id: str, path: str | Path,
+               caption: str = "") -> bool:
+    """Send a local image as a Telegram photo (e.g. a screenshot).
+    Returns True only when Telegram answered ok. Never raises."""
+    if not token or not chat_id:
+        return False
+    try:
+        data = Path(path).read_bytes()
+    except Exception as exc:
+        _log.warning("Telegram sendPhoto: cannot read %s: %s", path, exc)
+        return False
+    result = _post_multipart(token, "sendPhoto",
+                             {"chat_id": chat_id, "caption": caption[:1024]},
+                             "photo", Path(path).name, data)
+    return bool(result and result.get("ok"))
+
+
 def answer_callback(token: str, callback_query_id: str,
                     text: str = "") -> None:
     """Acknowledge an inline-button tap (stops the spinner). Never
@@ -157,6 +174,105 @@ def answer_callback(token: str, callback_query_id: str,
         return
     _post(token, "answerCallbackQuery",
           {"callback_query_id": callback_query_id, "text": text[:200]})
+
+
+def _hosts_path(hosts_file: str | Path | None = None) -> Path:
+    """The Windows hosts file (or `hosts_file` when given — used by
+    tests). Raises RuntimeError off Windows with no override."""
+    import sys
+
+    if hosts_file is not None:
+        return Path(hosts_file)
+    if sys.platform != "win32":
+        raise RuntimeError("hosts blocking works on Windows only")
+    return Path(r"C:\Windows\System32\drivers\etc\hosts")
+
+
+def _norm_domain(domain: str) -> str:
+    domain = (domain or "").strip().lower()
+    for prefix in ("https://", "http://", "www."):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    return domain.split("/")[0].strip()
+
+
+def block_domain(domain: str, hosts_file: str | Path | None = None) -> str:
+    """Block a domain for the whole PC by pointing it at 127.0.0.1
+    in the Windows hosts file (needs admin). Returns a short Bengali
+    result. Raises RuntimeError with a plain message on failure."""
+    domain = _norm_domain(domain)
+    if not domain or "." not in domain:
+        raise ValueError("সঠিক ডোমেইন দিন — যেমন facebook.com")
+    path = _hosts_path(hosts_file)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        text = ""
+    except PermissionError:
+        raise RuntimeError("hosts ফাইল লেখা যায়নি — DeskAudit অ্যাডমিন হিসেবে চালাতে হবে")
+    lines = text.splitlines()
+    targets = {domain, "www." + domain}
+    existing = {ln.split()[1].lower() for ln in lines
+                if ln.strip() and not ln.strip().startswith("#")
+                and len(ln.split()) >= 2 and ln.split()[0] == "127.0.0.1"}
+    missing = sorted(t for t in targets if t not in existing)
+    if not missing:
+        return f"🌐 {domain} আগেই ব্লক করা আছে।"
+    lines += [f"127.0.0.1 {t}  # DeskAudit" for t in missing]
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except PermissionError:
+        raise RuntimeError("hosts ফাইল লেখা যায়নি — DeskAudit অ্যাডমিন হিসেবে চালাতে হবে")
+    _flush_dns()
+    return f"🌐 {domain} ব্লক করা হয়েছে (এই PC-তে আর খুলবে না)।"
+
+
+def unblock_domain(domain: str, hosts_file: str | Path | None = None) -> str:
+    """Remove DeskAudit's block lines for a domain. Returns a short
+    Bengali result. Raises RuntimeError with a plain message on failure."""
+    domain = _norm_domain(domain)
+    if not domain or "." not in domain:
+        raise ValueError("সঠিক ডোমেইন দিন — যেমন facebook.com")
+    path = _hosts_path(hosts_file)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return f"🌐 {domain} ব্লক করা নেই।"
+    except PermissionError:
+        raise RuntimeError("hosts ফাইল লেখা যায়নি — DeskAudit অ্যাডমিন হিসেবে চালাতে হবে")
+    targets = {domain, "www." + domain}
+    kept = []
+    removed = 0
+    for ln in text.splitlines():
+        parts = ln.split()
+        if (len(parts) >= 2 and parts[0] == "127.0.0.1"
+                and parts[1].lower() in targets
+                and "# DeskAudit" in ln):
+            removed += 1
+            continue
+        kept.append(ln)
+    if not removed:
+        return f"🌐 {domain} ব্লক করা নেই।"
+    try:
+        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    except PermissionError:
+        raise RuntimeError("hosts ফাইল লেখা যায়নি — DeskAudit অ্যাডমিন হিসেবে চালাতে হবে")
+    _flush_dns()
+    return f"🌐 {domain}-এর ব্লক তুলে দেওয়া হয়েছে।"
+
+
+def _flush_dns() -> None:
+    """Best-effort DNS cache flush (Windows). Never raises."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        return
+    try:
+        subprocess.run(["ipconfig", "/flushdns"], capture_output=True,
+                       timeout=15)
+    except Exception:
+        pass
 
 
 def list_open_windows() -> list[dict]:
@@ -610,6 +726,47 @@ def build_week_text(db, day: str) -> str:
     return "\n".join(lines)
 
 
+def build_browser_text(db, day: str) -> str:
+    """Live browser tab + today's domains and recent visits (/browser)."""
+    lines = [f"🌐 ব্রাউজার — আজ ({day})", ""]
+    latest = None
+    try:
+        latest = db.latest_browser_session(day)
+    except Exception:
+        latest = None
+    if latest is not None:
+        lines.append("এখন / সর্বশেষ ট্যাব:")
+        lines.append(f"  • {latest['browser']} — {latest['domain'] or '(?)'}")
+        if latest['title']:
+            lines.append(f"    {(latest['title'] or '')[:90]}")
+        if latest['url']:
+            lines.append(f"    {str(latest['url'])[:120]}")
+        lines.append(f"    শুরু: {_hhmm(latest['started_at'])}")
+    else:
+        lines.append("  (আজ ব্রাউজার খোলা হয়নি।)")
+    try:
+        domains = db.browser_domain_totals(day)
+    except Exception:
+        domains = []
+    if domains:
+        lines.append("")
+        lines.append("আজকের ডোমেইন:")
+        for d in domains[:6]:
+            mark = " ✓ কাজের" if d["is_productive"] else " ✗ অন্যান্য"
+            lines.append(f"  • {d['domain']} — {_fmt_min(d['active'])}{mark}")
+    try:
+        visits = db.recent_visits(day, limit=8)
+    except Exception:
+        visits = []
+    if visits:
+        lines.append("")
+        lines.append("সর্বশেষ ভিজিট:")
+        for v in visits:
+            lines.append(f"  • {_hhmm(v['visited_at'])} {v['domain']}"
+                         f"{' — ' + (v['title'] or '')[:50] if v['title'] else ''}")
+    return "\n".join(lines)
+
+
 def build_search_text(db, day: str, query: str) -> str:
     """Search one day's files, window titles and browser searches."""
     res = db.search_today(day, query)
@@ -640,6 +797,8 @@ def build_search_text(db, day: str, query: str) -> str:
 HELP_TEXT = (
     "👋 DeskAudit বট — কমান্ড:\n"
     "📊 দেখা: /status /today /week /apps /projects /transfers /alerts /files\n"
+    "🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন>\n"
+    "📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
     "🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
     "📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
     "📋 /menu — বোতামসহ মেনু\n"
@@ -647,8 +806,10 @@ HELP_TEXT = (
     "🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ | /unmute — আবার চালু\n"
     "🕐 /digest <মিনিট|off> — ডাইজেস্টের সময় বদলানো\n"
     "🔒 /lock — কম্পিউটার লক করা\n"
+    "⬜ /screen white | /screen black | /screen off — স্ক্রিন ঢাকা/খোলা\n"
     "❌ /close <অ্যাপ> — চলমান অ্যাপ বন্ধ (নিশ্চিতকরণ লাগবে)\n"
     "🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze — আবার চালু\n"
+    "⏻ /shutdown | /restart — PC বন্ধ/রিস্টার্ট (নিশ্চিতকরণ লাগবে) | /abort — বাতিল\n"
     "🗑 /clear [তারিখ] — এক দিনের ডেটা মোছা (নিশ্চিতকরণ লাগবে)\n"
     "♻️ /reset — সব ডেটা মুছে নতুন শুরু, আগে ব্যাকআপ নেবে\n"
     "💾 /backup — এখনই ব্যাকআপ নেওয়া\n"
@@ -665,6 +826,7 @@ def menu_keyboard() -> dict:
 
     return {"inline_keyboard": [
         [btn("📊 বর্তমান অবস্থা", "m:status"), btn("📅 আজকের সারাংশ", "m:today")],
+        [btn("📸 স্ক্রিনশট", "m:shot"), btn("🌐 ব্রাউজার", "m:browser")],
         [btn("📅 সপ্তাহ", "m:week"), btn("🖥️ অ্যাপ", "m:apps")],
         [btn("🎯 প্রজেক্ট", "m:projects"), btn("🔒 ট্রান্সফার", "m:transfers")],
         [btn("📁 ফাইল", "m:files"), btn("⚠️ অ্যালার্ট", "m:alerts")],
@@ -1166,6 +1328,151 @@ class TelegramBot:
         else:
             self.send("📄 রিপোর্ট পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
 
+    # -- screenshots -----------------------------------------------------
+    def send_screenshot(self) -> None:
+        """Capture the PC's screen and send it as a Telegram photo.
+        On demand only, and only to the owner's chat — a screenshot
+        shows screen content, so it is never taken automatically."""
+        import sys
+        from datetime import datetime as _dt
+
+        if sys.platform != "win32":
+            self.send("📸 স্ক্রিনশট শুধু Windows PC-তে চলে।")
+            return
+        if self.project_root is None:
+            self.send("📸 স্ক্রিনশট নেওয়া যাচ্ছে না — এজেন্টের ফোল্ডার জানা নেই।")
+            return
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        path = self.project_root / "data" / f"shot-{stamp}.png"
+        try:
+            from .screenshot import capture_screen
+
+            capture_screen(path)
+        except Exception as exc:
+            self.send(f"📸 স্ক্রিনশট নেওয়া যায়নি: {exc}")
+            return
+        try:
+            if send_photo(self.token, self.chat_id, path,
+                          caption=f"DeskAudit — স্ক্রিনশট {stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}"):
+                self.send("📸 স্ক্রিনশট পাঠিয়ে দেওয়া হয়েছে।")
+            else:
+                self.send("📸 স্ক্রিনশট পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # -- browser control -------------------------------------------------
+    _BROWSER_EXES = ["chrome.exe", "msedge.exe", "brave.exe",
+                     "firefox.exe", "opera.exe", "vivaldi.exe"]
+
+    def request_close_browsers(self) -> None:
+        found = []
+        for exe in self._BROWSER_EXES:
+            procs, _ = self.find_processes(exe)
+            found += procs
+        if not found:
+            self.send("🌐 কোনো ব্রাউজার চলছে না।")
+            return
+        names = sorted({(p.info.get("name") or "?") for p in found})
+        self._ask_confirm(
+            f"🌐 সব ব্রাউজার বন্ধ করব? ({', '.join(names)} — {len(found)}টি প্রসেস)",
+            "close_browsers", {})
+
+    def _do_close_browsers(self) -> str:
+        closed = 0
+        total = 0
+        for exe in self._BROWSER_EXES:
+            procs, _ = self.find_processes(exe)
+            total += len(procs)
+            for proc in procs:
+                try:
+                    proc.terminate()
+                    closed += 1
+                except Exception:
+                    continue
+        if total == 0:
+            return "🌐 কোনো ব্রাউজার চলছে না।"
+        return f"🌐 সব ব্রাউজার বন্ধ করা হয়েছে ({closed}/{total}টি প্রসেস)।"
+
+    def request_block(self, domain: str) -> None:
+        self._ask_confirm(f"🌐 {domain} এই PC-তে ব্লক করব?",
+                          "block", {"domain": domain})
+
+    def request_unblock(self, domain: str) -> None:
+        self._ask_confirm(f"🌐 {domain}-এর ব্লক তুলে দেব?",
+                          "unblock", {"domain": domain})
+
+    def _do_block(self, domain: str) -> str:
+        try:
+            return block_domain(domain)
+        except Exception as exc:
+            return f"🌐 ব্লক করা যায়নি: {exc}"
+
+    def _do_unblock(self, domain: str) -> str:
+        try:
+            return unblock_domain(domain)
+        except Exception as exc:
+            return f"🌐 ব্লক তোলা যায়নি: {exc}"
+
+    # -- screen blank ------------------------------------------------------
+    def set_screen(self, color: str) -> str:
+        """Show a fullscreen white/black overlay, or lift it."""
+        from .screen_blank import blank_status, start_blank, stop_blank
+
+        if color == "off":
+            was_active, msg = stop_blank()
+            if msg == "windows_only":
+                return "⬜ স্ক্রিন সাদা/কালো করা শুধু Windows PC-তে চলে।"
+            if not was_active:
+                return "⬜ স্ক্রিন এখন এমনিতেই খোলা আছে।"
+            return "⬜ স্ক্রিন আবার খুলে দেওয়া হয়েছে।"
+        ok, msg = start_blank(color)
+        if msg == "windows_only":
+            return "⬜ স্ক্রিন সাদা/কালো করা শুধু Windows PC-তে চলে।"
+        if not ok:
+            return f"⬜ স্ক্রিন {color} করা যায়নি ({msg})।"
+        name = "সাদা" if color == "white" else "কালো"
+        return (f"⬜ পুরো স্ক্রিন {name} করে দেওয়া হয়েছে।\n"
+                f"খুলতে /screen off লিখুন।")
+
+    # -- shutdown / restart --------------------------------------------------
+    def request_shutdown(self, restart: bool) -> None:
+        verb = "রিস্টার্ট" if restart else "বন্ধ"
+        self._ask_confirm(
+            f"⏻ কম্পিউটার {verb} করব? ৬০ সেকেন্ড পরে {verb} হবে — "
+            "এর মধ্যে /abort লিখলে বাতিল হবে।",
+            "restart" if restart else "shutdown", {})
+
+    def _do_shutdown(self, restart: bool) -> str:
+        import subprocess
+        import sys
+
+        if sys.platform != "win32":
+            return "⏻ PC বন্ধ/রিস্টার্ট শুধু Windows PC-তে চলে।"
+        verb = "রিস্টার্ট" if restart else "বন্ধ"
+        try:
+            subprocess.run(["shutdown", "/r" if restart else "/s", "/t", "60",
+                            "/c", f"DeskAudit: {verb} হচ্ছে"],
+                           capture_output=True, timeout=20)
+        except Exception as exc:
+            return f"⏻ {verb} করা যায়নি: {exc}"
+        return (f"⏻ কম্পিউটার ৬০ সেকেন্ড পরে {verb} হবে।\n"
+                f"বাতিল করতে /abort লিখুন।")
+
+    def abort_shutdown(self) -> str:
+        import subprocess
+        import sys
+
+        if sys.platform != "win32":
+            return "⏻ PC বন্ধ/রিস্টার্ট শুধু Windows PC-তে চলে।"
+        try:
+            subprocess.run(["shutdown", "/a"], capture_output=True, timeout=20)
+        except Exception as exc:
+            return f"⏻ বাতিল করা যায়নি: {exc}"
+        return "⏻ বন্ধ/রিস্টার্ট বাতিল করা হয়েছে।"
+
     # -- pending confirmations ------------------------------------------
     def _get_pending(self) -> dict | None:
         raw = self.db.get_state("telegram_pending") if self.db else None
@@ -1204,10 +1511,20 @@ class TelegramBot:
             return self._do_freeze(str(args.get("app", "")), True)
         if action == "unfreeze":
             return self._do_freeze(str(args.get("app", "")), False)
+        if action == "close_browsers":
+            return self._do_close_browsers()
+        if action == "block":
+            return self._do_block(str(args.get("domain", "")))
+        if action == "unblock":
+            return self._do_unblock(str(args.get("domain", "")))
         if action == "clear":
             return self._do_clear(str(args.get("date", "")))
         if action == "reset":
             return self._do_reset()
+        if action == "shutdown":
+            return self._do_shutdown(False)
+        if action == "restart":
+            return self._do_shutdown(True)
         return "⌛ অচেনা অপেক্ষমাণ কাজ — বাতিল করা হয়েছে।"
 
     # -- outbound --------------------------------------------------------
@@ -1293,6 +1610,46 @@ class TelegramBot:
                 self.send_long(build_search_text(self.db, day, " ".join(args)))
         elif cmd == "/report":
             self.send_report(day)
+        elif cmd in ("/screenshot", "/shot"):
+            self.send_screenshot()
+        elif cmd == "/browser":
+            if not args:
+                self.send_long(build_browser_text(self.db, day))
+            elif args[0].lower() == "close":
+                self.request_close_browsers()
+            elif args[0].lower() == "block":
+                if len(args) < 2:
+                    self.send("🌐 কোন ডোমেইন ব্লক করব? যেমন /browser block facebook.com")
+                else:
+                    self.request_block(args[1])
+            elif args[0].lower() == "unblock":
+                if len(args) < 2:
+                    self.send("🌐 কোন ডোমেইনের ব্লক তুলব? যেমন /browser unblock facebook.com")
+                else:
+                    self.request_unblock(args[1])
+            else:
+                self.send("🌐 ব্যবহার: /browser, /browser close, /browser block <ডোমেইন>, /browser unblock <ডোমেইন>")
+        elif cmd == "/screen":
+            if not args:
+                from .screen_blank import blank_status
+
+                current = blank_status()
+                state = f"এখন {current} আছে" if current else "এখন খোলা আছে"
+                self.send(f"⬜ স্ক্রিন {state}। বদলাতে: /screen white, /screen black অথবা /screen off")
+            elif args[0].lower() in ("white", "সাদা"):
+                self.send(self.set_screen("white"))
+            elif args[0].lower() in ("black", "কালো"):
+                self.send(self.set_screen("black"))
+            elif args[0].lower() in ("off", "খোলা"):
+                self.send(self.set_screen("off"))
+            else:
+                self.send("⬜ ব্যবহার: /screen white, /screen black অথবা /screen off")
+        elif cmd == "/shutdown":
+            self.request_shutdown(restart=False)
+        elif cmd == "/restart":
+            self.request_shutdown(restart=True)
+        elif cmd == "/abort":
+            self.send(self.abort_shutdown())
         elif cmd == "/pause":
             self.send(self.pause_audit())
         elif cmd == "/resume":
@@ -1390,6 +1747,10 @@ class TelegramBot:
                 self.send_long(build_files_text(self.db, day))
             elif cmd == "report":
                 self.send_report(day)
+            elif cmd == "shot":
+                self.send_screenshot()
+            elif cmd == "browser":
+                self.send_long(build_browser_text(self.db, day))
             elif cmd == "pause":
                 self.send(self.pause_audit())
             elif cmd == "resume":

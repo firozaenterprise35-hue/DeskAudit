@@ -945,5 +945,33 @@ class Database:
             searches = []
         return {"files": files, "titles": titles, "searches": searches}
 
+    def latest_browser_session(self, date: str) -> sqlite3.Row | None:
+        """The most recently started browser session of one day
+        (used by Telegram /browser for the live tab)."""
+        try:
+            return self.conn.execute(
+                """SELECT browser, url, domain, title, started_at
+                   FROM browser_sessions
+                   WHERE substr(started_at, 1, 10) = ?
+                   ORDER BY started_at DESC LIMIT 1""",
+                (date,),
+            ).fetchone()
+        except Exception:
+            return None
+
+    def recent_visits(self, date: str, limit: int = 10) -> list[sqlite3.Row]:
+        """Latest history visits of one day, newest first
+        (used by Telegram /browser)."""
+        try:
+            return self.conn.execute(
+                """SELECT browser, url, domain, title, visited_at
+                   FROM browser_visits
+                   WHERE substr(visited_at, 1, 10) = ?
+                   ORDER BY visited_at DESC LIMIT ?""",
+                (date, limit),
+            ).fetchall()
+        except Exception:
+            return []
+
     def close(self) -> None:
         self.conn.close()

@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -269,7 +269,7 @@ shared report summary, so Telegram and the dashboard can never drift):
   When the day has no recorded work yet, /status says so plainly and
   reminds you to check that the agent is running.
 
-**Remote control (v12.2)** — the same bot also controls the agent.
+**Remote control (v12.3)** — the same bot also controls the agent.
 Only the owner's chat id may use these; others are ignored. The agent
 must be running on the PC (it polls Telegram every ~30 s).
 - Read-only: **/week** (7-day summary), **/apps**, **/projects**,
@@ -291,6 +291,30 @@ must be running on the PC (it polls Telegram every ~30 s).
 - Safety: /close, /freeze, /clear and /reset always ask “নিশ্চিত?”
   first and only run after you reply হ্যাঁ/yes or tap ✅ (the
   confirmation expires after 5 minutes; reply না to cancel).
+
+**Screenshots, browser control, screen blank, power (v12.3)** — the
+admin controls. You are the admin/controller of your company's PCs,
+so these run from your Telegram chat only.
+- **/screenshot** (or /shot): captures the PC's whole screen right
+  now and sends it as a Telegram photo. On demand only — never
+  automatic — and the file is deleted after sending. Note: a
+  screenshot shows screen content (typed text, messages), unlike the
+  usual metadata-only reports; tell your staff the PCs are monitored.
+- **/browser**: which sites are open now — the live tab (browser,
+  domain, title, URL, start time), today's domains with productive /
+  distracting marks, and the latest visits. **/browser close** closes
+  every browser (Chrome, Edge, Brave, Firefox, Opera, Vivaldi) after
+  confirmation. **/browser block <domain>** blocks a site for the
+  whole PC via the Windows hosts file (needs DeskAudit to run as
+  admin); **/browser unblock <domain>** lifts it.
+- **/screen white** / **/screen black**: covers every monitor with a
+  solid white or black fullscreen window (always on top, no close
+  box) until **/screen off** lifts it. If the agent stops, the
+  overlay dies with it.
+- **/shutdown** / **/restart**: the PC powers off / restarts 60
+  seconds after you confirm (so work can be saved); **/abort**
+  cancels it while the countdown runs. All three need confirmation
+  first, like the other destructive commands.
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -379,6 +403,8 @@ DeskAudit/
 │   ├── secret_gate.py       # 4 desktop clicks + code opens the dashboard
 │   ├── transfers.py         # Data Transfer Monitor: USB / cloud / email / print / sensitive folders
 │   ├── telegram.py          # Telegram bot: status / digest / critical alerts, /status /today commands
+│   ├── screenshot.py        # Screen capture (ctypes BitBlt + stdlib PNG encoder, Windows only)
+│   ├── screen_blank.py      # Fullscreen white/black overlay window (Windows only)
 │   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
 │   ├── dashboard.py         # Web dashboard: data API + stdlib HTTP server
 │   ├── dashboard_static/
@@ -411,6 +437,9 @@ DeskAudit/
     ├── test_transfers.py    # Data Transfer Monitor tests
     ├── test_audit_v11_1.py  # v11.1 re-audit regression tests (19 tests)
     ├── test_telegram.py     # Telegram bot + hourly email tests (mocked network)
+    ├── test_telegram_commands.py  # Telegram remote control tests (v12.2, mocked network)
+    ├── test_telegram_control.py   # Screenshot/browser/screen/power commands (v12.3)
+    ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.3)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -438,7 +467,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.2.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.3.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -477,17 +506,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.2-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.3-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.2.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.3.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.2.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.3.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
