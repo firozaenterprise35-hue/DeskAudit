@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -269,7 +269,7 @@ shared report summary, so Telegram and the dashboard can never drift):
   When the day has no recorded work yet, /status says so plainly and
   reminds you to check that the agent is running.
 
-**Remote control (v12.3)** — the same bot also controls the agent.
+**Remote control (v12.4)** — the same bot also controls the agent.
 Only the owner's chat id may use these; others are ignored. The agent
 must be running on the PC (it polls Telegram every ~30 s).
 - Read-only: **/week** (7-day summary), **/apps**, **/projects**,
@@ -292,7 +292,7 @@ must be running on the PC (it polls Telegram every ~30 s).
   first and only run after you reply হ্যাঁ/yes or tap ✅ (the
   confirmation expires after 5 minutes; reply না to cancel).
 
-**Screenshots, browser control, screen blank, power (v12.3)** — the
+**Screenshots, browser control, screen blank, power (v12.4)** — the
 admin controls. You are the admin/controller of your company's PCs,
 so these run from your Telegram chat only.
 - **/screenshot** (or /shot): captures the PC's whole screen right
@@ -315,6 +315,23 @@ so these run from your Telegram chat only.
   seconds after you confirm (so work can be saved); **/abort**
   cancels it while the countdown runs. All three need confirmation
   first, like the other destructive commands.
+
+**Audit fixes (v12.4)** — Firoza reported the v12.3 controls were
+cross-firing and the screen never turned white/black. Two real bugs
+were found by reading the code:
+- The overlay set `WNDCLASS.hbrBackground` to a raw colour number
+  (0xFFFFFF / 0x000000). That field must hold a BRUSH handle — a
+  colour number is an invalid handle (and 0 is NULL, "do not
+  erase"), so Windows never painted the window and it stayed
+  invisible. Fixed with a real `CreateSolidBrush`, one window class
+  per colour, and an explicit fill on WM_ERASEBKGND / WM_PAINT.
+- Confirmations were not tied to their action: every ✅ button said
+  plain `confirm:yes` and ran whatever happened to be pending when
+  tapped, a stale pending survived a new command, and a casual
+  "ok" counted as yes. Fixed: each confirmation carries a one-time
+  token (old buttons are refused), a new command or menu tap drops
+  a stale pending, and only an explicit yes ("হ্যাঁ"/"yes"/"confirm")
+  confirms.
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -438,8 +455,8 @@ DeskAudit/
     ├── test_audit_v11_1.py  # v11.1 re-audit regression tests (19 tests)
     ├── test_telegram.py     # Telegram bot + hourly email tests (mocked network)
     ├── test_telegram_commands.py  # Telegram remote control tests (v12.2, mocked network)
-    ├── test_telegram_control.py   # Screenshot/browser/screen/power commands (v12.3)
-    ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.3)
+    ├── test_telegram_control.py   # Screenshot/browser/screen/power commands (v12.4)
+    ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.4)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -467,7 +484,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.3.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.4.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -506,17 +523,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.3-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.4-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.3.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.4.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.3.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.4.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

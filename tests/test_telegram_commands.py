@@ -497,6 +497,126 @@ def test_poll_callbacks_and_wrong_chat():
     print("poll callbacks and wrong chat passed")
 
 
+def test_confirm_token_binding():
+    """v12.4 audit fix: a ✅ button must only confirm the action it
+    was shown for. A stale button (wrong token, or the old bare
+    "confirm:yes" format) must never run the pending action."""
+    procs = [_FakeProc(301, "chrome.exe")]
+    old_psutil = sys.modules.get("psutil")
+    sys.modules["psutil"] = _FakePsutil(procs)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot, _ = _make_bot(tmp, db)
+            net = _Net().install()
+            try:
+                bot.handle_text("/close chrome")
+                token = None
+                for method, payload in reversed(net.posts):
+                    kb = (payload.get("reply_markup") or {}).get("inline_keyboard")
+                    if kb:
+                        for row in kb:
+                            for b in row:
+                                if b["callback_data"].startswith("confirm:yes:"):
+                                    token = b["callback_data"].split(":")[2]
+                        break
+                assert token, "confirm button must carry a token"
+                # Wrong token: nothing happens, pending survives.
+                bot.handle_callback("confirm:yes:deadbeef", "cb-1")
+                assert "আর কার্যকর নয়" in net.last_text()
+                assert not procs[0].terminated
+                assert bot._get_pending() is not None
+                # Old bare format (pre-v12.4 buttons still in the chat):
+                # also refused.
+                bot.handle_callback("confirm:yes", "cb-2")
+                assert "আর কার্যকর নয়" in net.last_text()
+                assert not procs[0].terminated
+                # Wrong-token ❌ does not cancel either.
+                bot.handle_callback("confirm:no:deadbeef", "cb-3")
+                assert "আর কার্যকর নয়" in net.last_text()
+                assert bot._get_pending() is not None
+                # The right token executes.
+                bot.handle_callback(f"confirm:yes:{token}", "cb-4")
+                assert procs[0].terminated
+                assert "বন্ধ করা হয়েছে" in net.last_text()
+            finally:
+                net.uninstall()
+                db.close()
+    finally:
+        if old_psutil is None:
+            sys.modules.pop("psutil", None)
+        else:
+            sys.modules["psutil"] = old_psutil
+    print("confirm token binding passed")
+
+
+def test_new_command_clears_pending():
+    """v12.4 audit fix: a new command drops a stale pending, so a
+    later unrelated "হ্যাঁ" cannot fire an old action."""
+    procs = [_FakeProc(311, "chrome.exe")]
+    old_psutil = sys.modules.get("psutil")
+    sys.modules["psutil"] = _FakePsutil(procs)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot, _ = _make_bot(tmp, db)
+            net = _Net().install()
+            try:
+                bot.handle_text("/close chrome")
+                assert bot._get_pending() is not None
+                bot.handle_text("/status")  # a different command
+                assert bot._get_pending() is None, "new command must clear pending"
+                bot.handle_text("হ্যাঁ")
+                assert "অপেক্ষমাণ কাজ নেই" in net.last_text()
+                assert not procs[0].terminated
+                # Same for a menu tap.
+                bot.handle_text("/close chrome")
+                bot.handle_callback("m:status", "cb-9")
+                assert bot._get_pending() is None
+                assert not procs[0].terminated
+            finally:
+                net.uninstall()
+                db.close()
+    finally:
+        if old_psutil is None:
+            sys.modules.pop("psutil", None)
+        else:
+            sys.modules["psutil"] = old_psutil
+    print("new command clears pending passed")
+
+
+def test_ok_does_not_confirm():
+    """v12.4 audit fix: a casual "ok" / "y" must not confirm a
+    destructive action — only an explicit yes counts."""
+    procs = [_FakeProc(321, "chrome.exe")]
+    old_psutil = sys.modules.get("psutil")
+    sys.modules["psutil"] = _FakePsutil(procs)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot, _ = _make_bot(tmp, db)
+            net = _Net().install()
+            try:
+                bot.handle_text("/close chrome")
+                bot.handle_text("ok")
+                assert bot._get_pending() is not None
+                assert not procs[0].terminated
+                bot.handle_text("y")
+                assert bot._get_pending() is not None
+                assert not procs[0].terminated
+                bot.handle_text("হ্যাঁ")
+                assert procs[0].terminated
+            finally:
+                net.uninstall()
+                db.close()
+    finally:
+        if old_psutil is None:
+            sys.modules.pop("psutil", None)
+        else:
+            sys.modules["psutil"] = old_psutil
+    print("ok does not confirm passed")
+
+
 if __name__ == "__main__":
     test_query_commands()
     test_menu_and_callbacks()
@@ -512,4 +632,7 @@ if __name__ == "__main__":
     test_update_project_goal_unit()
     test_delete_day_and_reset_data_unit()
     test_poll_callbacks_and_wrong_chat()
+    test_confirm_token_binding()
+    test_new_command_clears_pending()
+    test_ok_does_not_confirm()
     print("ALL TELEGRAM COMMAND TESTS PASSED")

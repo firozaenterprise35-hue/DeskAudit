@@ -553,6 +553,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Send the current status to Telegram now")
     parser.add_argument("--screenshot", default=None, metavar="PATH",
                         help="Capture the screen as a PNG (Windows only) and save it to PATH")
+    parser.add_argument("--screen-test", default=None, metavar="COLOR",
+                        help="Show the fullscreen white/black overlay for --screen-seconds (test only)")
+    parser.add_argument("--screen-seconds", type=int, default=5,
+                        help="Seconds for --screen-test (default 5)")
     parser.add_argument("--email-test", action="store_true",
                         help="Send a test email to the configured address")
     parser.add_argument("--email-now", action="store_true",
@@ -867,6 +871,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Screenshot failed: {exc}")
             return 1
         print(f"Screenshot saved: {out} ({out.stat().st_size} bytes)")
+        return 0
+
+    if args.screen_test:
+        from deskaudit.screen_blank import start_blank, stop_blank
+
+        ok, msg = start_blank(args.screen_test)
+        print(f"Screen {args.screen_test}: ok={ok} ({msg})")
+        if not ok:
+            return 1
+        time.sleep(max(1, args.screen_seconds))
+        stop_blank()
+        print("Screen overlay stopped.")
         return 0
 
     if args.telegram_test or args.telegram_now:

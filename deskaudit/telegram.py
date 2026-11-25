@@ -949,8 +949,10 @@ class TelegramBot:
         "smss.exe", "taskhostw.exe", "fontdrvhost.exe", "registry",
         "system", "idle",
     }
-    _CONFIRM_WORDS = {"হ্যাঁ", "হ্যা", "yes", "y", "confirm", "ok",
-                      "হ্যাঁ করো", "করো"}
+    # Audit note (v12.3 bug, fixed in v12.4): "y", "ok" and "করো" used
+    # to confirm too — a casual "ok" reply could fire a pending
+    # destructive action. Only an explicit yes counts now.
+    _CONFIRM_WORDS = {"হ্যাঁ", "হ্যা", "yes", "confirm", "হ্যাঁ করো"}
     _CANCEL_WORDS = {"না", "no", "cancel", "বাতিল", "থাক"}
     _PENDING_TTL = 300  # a confirmation lives 5 minutes
 
@@ -1121,11 +1123,16 @@ class TelegramBot:
         return found, ""
 
     def _ask_confirm(self, label: str, action: str, args: dict) -> None:
-        """Store a pending action and ask the owner to confirm it."""
-        self._set_pending(action, args)
+        """Store a pending action and ask the owner to confirm it.
+
+        The ✅/❌ buttons carry the pending action's token, so an old
+        button can never fire a different, newer action (v12.3 bug:
+        every button said plain "confirm:yes" and ran whatever was
+        pending at tap time)."""
+        token = self._set_pending(action, args)
         markup = {"inline_keyboard": [[
-            {"text": "✅ হ্যাঁ, করো", "callback_data": "confirm:yes"},
-            {"text": "❌ না, বাতিল", "callback_data": "confirm:no"},
+            {"text": "✅ হ্যাঁ, করো", "callback_data": f"confirm:yes:{token}"},
+            {"text": "❌ না, বাতিল", "callback_data": f"confirm:no:{token}"},
         ]]}
         self.send_markup(f"{label}\n\nনিশ্চিত? “হ্যাঁ” লিখুন অথবা ✅ চাপুন। (৫ মিনিটের মধ্যে)",
                          markup)
@@ -1487,10 +1494,17 @@ class TelegramBot:
             return None
         return pending
 
-    def _set_pending(self, action: str, args: dict) -> None:
-        payload = {"action": action, "args": args,
+    def _set_pending(self, action: str, args: dict) -> str:
+        """Store a pending action with a one-time token. Returns the
+        token — the ✅/❌ buttons carry it, so only the button shown
+        for THIS action can confirm it."""
+        import secrets
+
+        token = secrets.token_hex(4)
+        payload = {"action": action, "args": args, "token": token,
                    "expires": time.time() + self._PENDING_TTL}
         self.db.set_state("telegram_pending", json.dumps(payload))
+        return token
 
     def _clear_pending(self) -> None:
         try:
@@ -1498,10 +1512,16 @@ class TelegramBot:
         except Exception:
             pass
 
-    def _run_pending(self) -> str:
+    def _run_pending(self, token: str | None = None,
+                     *, from_button: bool = False) -> str:
         pending = self._get_pending()
         if not pending:
             return "⌛ কোনো অপেক্ষমাণ কাজ নেই (অথবা সময় শেষ হয়ে গেছে)। আবার কমান্ড দিন।"
+        if from_button and pending.get("token") != token:
+            # A button from an older confirmation (or a bare old-format
+            # "confirm:yes" with no token at all): it must never run
+            # the action that is pending NOW.
+            return "⌛ এই নিশ্চিতকরণটি আর কার্যকর নয় — আবার কমান্ড দিন।"
         self._clear_pending()
         action = pending.get("action", "")
         args = pending.get("args", {}) or {}
@@ -1581,6 +1601,13 @@ class TelegramBot:
         parts = text.split()
         cmd = parts[0].lower()
         args = parts[1:]
+        # A new command means the owner has moved on: drop any pending
+        # confirmation from an earlier command (v12.3 bug: a stale
+        # pending could later fire from an unrelated "হ্যাঁ"). The
+        # command that SETS a pending runs after this point, so it is
+        # never cleared by its own arrival.
+        if cmd.startswith("/"):
+            self._clear_pending()
         day = today_str()
         if cmd in ("/start", "/help"):
             self.send(HELP_TEXT)
@@ -1722,12 +1749,28 @@ class TelegramBot:
 
         answer_callback(self.token, callback_query_id)
         day = today_str()
-        if data == "confirm:yes":
-            self.send(self._run_pending())
-        elif data == "confirm:no":
+        if data.startswith("confirm:"):
+            # confirm:yes:<token> / confirm:no:<token> — the token must
+            # match the pending action, or this is a stale button.
+            bits = data.split(":")
+            verdict = bits[1] if len(bits) > 1 else ""
+            token = bits[2] if len(bits) > 2 else None
+            if verdict == "yes":
+                self.send(self._run_pending(token, from_button=True))
+            elif verdict == "no":
+                pending = self._get_pending()
+                if pending is not None and token is not None \
+                        and pending.get("token") == token:
+                    self._clear_pending()
+                    self.send("❌ বাতিল করা হয়েছে।")
+                else:
+                    self.send("⌛ এই নিশ্চিতকরণটি আর কার্যকর নয় — আবার কমান্ড দিন।")
+            else:
+                self.send("❓ অচেনা বোতাম — /help লিখুন।")
+            return
+        if data.startswith("m:"):
+            # A menu tap is a new action: drop any stale pending first.
             self._clear_pending()
-            self.send("❌ বাতিল করা হয়েছে।")
-        elif data.startswith("m:"):
             cmd = data[2:]
             if cmd == "status":
                 self.send_status(day)
