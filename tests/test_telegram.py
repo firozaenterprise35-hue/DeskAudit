@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from deskaudit.database import Database  # noqa: E402
 from deskaudit.emailer import build_hourly_email, configured as email_configured, send_email  # noqa: E402
-from deskaudit.telegram import TelegramBot, build_digest_text, build_status_text, send_message  # noqa: E402
+from deskaudit.telegram import (TelegramBot, build_digest_text,
+                                build_status_text, build_today_text,
+                                send_long, send_message)  # noqa: E402
 from deskaudit.utils import today_str  # noqa: E402
 
 
@@ -23,15 +25,32 @@ def _seed_db(path):
     db = Database(path)
     now = datetime.now()
     day = today_str()
+    db.upsert_project("Office", daily_goal_minutes=240)
     sid = db.start_app_session("WINWORD.EXE", r"C:\Program Files\WINWORD.EXE",
-                               "রিপোর্ট.docx - Word", now - timedelta(minutes=40))
+                               "রিপোর্ট.docx - Word", now - timedelta(minutes=40),
+                               project="Office")
     db.update_app_session(sid, now, 2400, 1800, 600)
     db.start_app_session("chrome.exe", r"C:\Chrome\chrome.exe",
                          "Gmail - Inbox", now - timedelta(minutes=5))
     db.log_file_event("modified", r"C:\Users\Firoza\Documents\Office\রিপোর্ট.docx",
-                      occurred_at=now - timedelta(minutes=10))
+                      occurred_at=now - timedelta(minutes=10), project="Office")
     db.log_transfer(day, "usb_copy", channel="E:", file_name="রিপোর্ট.docx",
-                    file_path=r"E:\রিপোর্ট.docx", occurred_at=now.isoformat(timespec="seconds"))
+                    file_path=r"E:\রিপোর্ট.docx", size_bytes=2500000,
+                    destination="E: (USB)", occurred_at=now.isoformat(timespec="seconds"))
+    bsid = db.start_browser_session("chrome", "https://docs.google.com/doc",
+                                    "docs.google.com", "রিপোর্ট - Google Docs",
+                                    "productivity", True,
+                                    now - timedelta(minutes=30), project="Office")
+    db.update_browser_session(bsid, now - timedelta(minutes=10), 1200, 900, 300)
+    db.log_browser_search("chrome", "মোবাইল দাম তালিকা",
+                          "https://www.google.com/search?q=x", "google.com",
+                          now - timedelta(minutes=20), project="Office")
+    db.log_browser_download("chrome", "https://example.com/price.pdf",
+                            "example.com", r"C:\Downloads\price.pdf",
+                            "price.pdf", 1200000, 1200000, "complete",
+                            now - timedelta(minutes=15), project="Office")
+    db.save_alert(day, "large_download", "warning",
+                  "বড় ডাউনলোড: price.pdf", "1.2 MB ডাউনলোড হয়েছে")
     return db, day
 
 
@@ -90,11 +109,60 @@ def test_status_text():
         assert "রিপোর্ট.docx" in text
         assert "usb_copy" in text
         assert "chrome.exe" in text or "Gmail" in text
+        # v12.1 full data: projects with goals, productive split,
+        # searches, downloads, transfer destination + size, file time.
+        assert "Office" in text and "লক্ষ্য" in text
+        assert "কাজের" in text and "অন্যান্য" in text
+        assert "মোবাইল দাম তালিকা" in text
+        assert "price.pdf" in text and "1.1 MB" in text
+        assert "E: (USB)" in text and "2.4 MB" in text
+        assert "প্রথম কাজ" in text
+        assert "বড় ডাউনলোড" in text
         # Metadata only: no typed content is ever in the text (there is
         # none to leak — the DB holds titles/names only).
         assert "পাসওয়ার্ড" not in text
         db.close()
     print("status text passed")
+
+
+def test_today_text():
+    with tempfile.TemporaryDirectory() as tmp:
+        db, day = _seed_db(os.path.join(tmp, "t.db"))
+        text = build_today_text(db, day)
+        assert "আজকের সারাংশ" in text
+        assert "Office" in text and "মোবাইল দাম তালিকা" in text
+        assert "এখন খোলা আছে" not in text  # no live section in /today
+        db.close()
+    print("today text passed")
+
+
+def test_send_long_splits():
+    import deskaudit.telegram as tg
+
+    sent = []
+    old_send = tg.send_message
+    tg.send_message = lambda token, chat_id, text: sent.append(text) or True
+    try:
+        long_text = "\n".join(f"লাইন {i} — কিছু তথ্য" for i in range(300))
+        assert len(long_text) > 3900
+        assert tg.send_long("tok", "999", long_text) is True
+        assert len(sent) > 1
+        assert all(len(c) <= 3900 for c in sent)
+        assert "".join(sent).count("লাইন") == 300
+        assert tg.send_long("tok", "999", "ছোট") is True
+        assert sent[-1] == "ছোট"
+    finally:
+        tg.send_message = old_send
+    print("send_long splits passed")
+
+
+def test_empty_day_hint():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "empty.db"))
+        text = build_status_text(db, today_str())
+        assert "কোনো কাজ রেকর্ড হয়নি" in text
+        db.close()
+    print("empty day hint passed")
 
 
 def test_digest_text():
@@ -103,6 +171,9 @@ def test_digest_text():
         text = build_digest_text(db, day, 60)
         assert "WINWORD.EXE" in text
         assert "রিপোর্ট.docx" in text
+        assert "Office" in text  # project split in the digest
+        assert "মোবাইল দাম তালিকা" in text
+        assert "price.pdf" in text
         db.close()
     print("digest text passed")
 
@@ -163,6 +234,9 @@ def test_build_hourly_email():
         assert "আপডেট" in subject
         assert "WINWORD.EXE" in text
         assert "রিপোর্ট.docx" in text
+        assert "Office" in text  # v12.1: projects in the email too
+        assert "মোবাইল দাম তালিকা" in text
+        assert "price.pdf" in text
         assert "<table" in html and "WINWORD.EXE" in html
         assert "টাইপ করা লেখা" in text  # the metadata-only footer
         db.close()
@@ -248,6 +322,9 @@ if __name__ == "__main__":
     test_send_message_mocked()
     test_send_message_failure()
     test_status_text()
+    test_today_text()
+    test_send_long_splits()
+    test_empty_day_hint()
     test_digest_text()
     test_poll_commands()
     test_bot_not_configured()

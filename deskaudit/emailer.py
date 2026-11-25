@@ -96,6 +96,47 @@ def build_hourly_email(db, day: str, since_minutes: int = 60) -> tuple[str, str,
     except Exception:
         counts = {}
     total_transfers = sum(v.get("count", 0) for v in counts.values())
+    # Same full-day detail as the Telegram status, from the shared
+    # report summary: projects with goals, searches, downloads and
+    # transfer rows with file names (not just counts).
+    transfer_rows_html = ""
+    try:
+        from .report import build_summary
+
+        s = build_summary(db, day)
+    except Exception:
+        s = None
+    if s:
+        projects = [p for p in s.get("projects", [])
+                    if p.get("project") != "Untagged"]
+        if projects:
+            lines.append("প্রজেক্ট:")
+            for p in projects[:5]:
+                goal = ""
+                if p.get("goal_minutes"):
+                    goal = (f" / লক্ষ্য {_fmt_min(p['goal_minutes'] * 60)}"
+                            f" ({p.get('goal_percent', 0)}%)")
+                lines.append(f"  • {p['project']} — {_fmt_min(p['active_seconds'])}{goal}")
+        b = s.get("browser", {})
+        if b.get("searches"):
+            lines.append("সার্চ:")
+            for q in b["searches"][:5]:
+                lines.append(f"  • {q['query']} (x{q['count']})")
+        if b.get("downloads"):
+            lines.append("ডাউনলোড:")
+            for d in b["downloads"][:5]:
+                lines.append(f"  • {d['file']} [{d.get('state', '')}]")
+        tr = s.get("transfers", {})
+        if tr.get("rows"):
+            lines.append("ডেটা ট্রান্সফার:")
+            html_items = []
+            for row in tr["rows"][:5]:
+                lines.append(f"  • {row['at'][11:16]} {row['type']} — "
+                             f"{row['file'] or row['channel']} -> {row['destination']}")
+                html_items.append(f"{row['at'][11:16]} {row['type']} — "
+                                  f"{row['file'] or row['channel']} -&gt; {row['destination']}")
+            transfer_rows_html = ("<p>ডেটা ট্রান্সফার:<br>" +
+                                  "<br>".join(html_items) + "</p>")
     if total_transfers:
         lines.append(f"আজ মোট ডেটা ট্রান্সফার: {total_transfers}টি")
     try:
@@ -114,6 +155,7 @@ def build_hourly_email(db, day: str, since_minutes: int = 60) -> tuple[str, str,
         "<tr><td colspan='2'>এই সময়ে কোনো নতুন অ্যাপ সেশন শুরু হয়নি।</td></tr>"
     transfer_line = (f"<p>আজ মোট ডেটা ট্রান্সফার: {total_transfers}টি</p>"
                      if total_transfers else "")
+    transfer_line += transfer_rows_html
     alert_line = ("<p>আজকের অ্যালার্ট:<br>" +
                   "<br>".join(f"[{a['severity']}] {a['title']}" for a in alerts) +
                   "</p>") if alerts else ""

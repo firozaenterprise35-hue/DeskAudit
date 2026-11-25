@@ -139,6 +139,90 @@ def _now_bangla() -> str:
     return datetime.now().strftime("%H:%M")
 
 
+def _fmt_size(nbytes) -> str:
+    """Human size for downloads / transfers (B, KB, MB)."""
+    try:
+        n = float(nbytes or 0)
+    except Exception:
+        return ""
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{int(n)} B" if n else ""
+
+
+def _hhmm(ts) -> str:
+    """HH:MM out of an ISO timestamp, '' when missing."""
+    try:
+        return str(ts or "")[11:16]
+    except Exception:
+        return ""
+
+
+def _day_bounds(db, day: str) -> tuple[str, str]:
+    """(first activity, last activity) timestamps for the day."""
+    try:
+        row = db.conn.execute(
+            """SELECT MIN(started_at) AS first_at,
+                      MAX(COALESCE(ended_at, started_at)) AS last_at
+               FROM app_sessions WHERE substr(started_at, 1, 10) = ?""",
+            (day,),
+        ).fetchone()
+        return (row["first_at"] or "", row["last_at"] or "")
+    except Exception:
+        return "", ""
+
+
+def _full_summary(db, day: str) -> dict | None:
+    """The same dict the dashboard/report uses (report.build_summary):
+    totals, projects with goals, browser productive/distracting,
+    searches, downloads, transfers, file counts. None on failure —
+    callers fall back to a minimal text instead of crashing."""
+    try:
+        from .report import build_summary
+
+        return build_summary(db, day)
+    except Exception as exc:
+        _log.warning("Telegram build_summary failed: %s", exc)
+        return None
+
+
+def _window_searches(db, since: datetime, limit: int = 5) -> list:
+    try:
+        return db.conn.execute(
+            """SELECT query, COUNT(*) AS n FROM browser_searches
+               WHERE searched_at >= ? GROUP BY query
+               ORDER BY n DESC, query ASC LIMIT ?""",
+            (since.isoformat(timespec="seconds"), limit),
+        ).fetchall()
+    except Exception:
+        return []
+
+
+def _window_downloads(db, since: datetime, limit: int = 5) -> list:
+    try:
+        return db.conn.execute(
+            """SELECT file_name, total_bytes, state FROM browser_downloads
+               WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?""",
+            (since.isoformat(timespec="seconds"), limit),
+        ).fetchall()
+    except Exception:
+        return []
+
+
+def _window_transfers(db, since: datetime, limit: int = 6) -> list:
+    try:
+        return db.conn.execute(
+            """SELECT transfer_type, channel, file_name, size_bytes,
+                      destination, occurred_at FROM transfers
+               WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?""",
+            (since.isoformat(timespec="seconds"), limit),
+        ).fetchall()
+    except Exception:
+        return []
+
+
 def _open_session(db, day: str):
     """The currently-open app session (ended_at NULL), if any."""
     try:
@@ -169,7 +253,7 @@ def _recent_sessions(db, day: str, since: datetime, limit: int = 8) -> list:
     """App sessions started since `since` (for the hourly digest)."""
     try:
         return db.conn.execute(
-            """SELECT app_name, window_title,
+            """SELECT app_name, window_title, project,
                       COALESCE(active_seconds, 0) AS active
                FROM app_sessions
                WHERE substr(started_at, 1, 10) = ? AND started_at >= ?
@@ -180,66 +264,105 @@ def _recent_sessions(db, day: str, since: datetime, limit: int = 8) -> list:
         return []
 
 
-def build_status_text(db, day: str) -> str:
-    """Full Bengali status: what is open NOW, and what happened today.
+def build_status_text(db, day: str, include_open: bool = True) -> str:
+    """Full Bengali status — every section the dashboard shows, in text:
+    what is open NOW, today's totals (active/idle, first/last work),
+    projects with goal progress, top apps, browser (productive vs
+    distracting, top domains, searches, downloads), recent files with
+    times, transfer rows with file names + destinations, alerts.
     Metadata only — app names, window titles, file names, domains."""
-    lines = [f"📊 DeskAudit — বর্তমান অবস্থা ({day} {_now_bangla()})", ""]
+    title = "📊 DeskAudit — বর্তমান অবস্থা" if include_open else "📊 DeskAudit — আজকের সারাংশ"
+    lines = [f"{title} ({day} {_now_bangla()})", ""]
     # --- right now -------------------------------------------------
-    open_row = _open_session(db, day)
-    windows = list_open_windows()
-    lines.append("🖥️ এখন খোলা আছে:")
-    if open_row:
-        lines.append(f"  • এখন সামনে: {open_row['app_name']} — "
-                     f"{open_row['window_title'] or '(শিরোনাম নেই)'}")
-    if windows:
-        by_app: dict[str, list[str]] = {}
-        for w in windows:
-            by_app.setdefault(w["app"], []).append(w["title"])
-        for app, titles in sorted(by_app.items()):
-            lines.append(f"  • {app} ({len(titles)}টি উইন্ডো)")
-            for t in titles[:3]:
-                lines.append(f"      — {t[:80]}")
-    elif not open_row:
-        lines.append("  • (এই মুহূর্তে কোনো সক্রিয় অ্যাপ ধরা পড়েনি)")
-    # --- today -----------------------------------------------------
-    try:
-        totals = db.totals(day)
-        active = _fmt_min(totals["active"])
-    except Exception:
-        active = "—"
-    lines.append("")
-    lines.append(f"⏱️ আজ মোট সক্রিয় সময়: {active}")
-    try:
-        apps = db.app_totals(day)[:5]
-    except Exception:
-        apps = []
-    if apps:
+    if include_open:
+        open_row = _open_session(db, day)
+        windows = list_open_windows()
+        lines.append("🖥️ এখন খোলা আছে:")
+        if open_row:
+            lines.append(f"  • এখন সামনে: {open_row['app_name']} — "
+                         f"{open_row['window_title'] or '(শিরোনাম নেই)'}")
+        if windows:
+            by_app: dict[str, list[str]] = {}
+            for w in windows:
+                by_app.setdefault(w["app"], []).append(w["title"])
+            for app, titles in sorted(by_app.items()):
+                lines.append(f"  • {app} ({len(titles)}টি উইন্ডো)")
+                for t in titles[:3]:
+                    lines.append(f"      — {t[:80]}")
+        elif not open_row:
+            lines.append("  • (এই মুহূর্তে কোনো সক্রিয় অ্যাপ ধরা পড়েনি)")
+        lines.append("")
+    # --- today, from the same summary the dashboard uses ----------
+    s = _full_summary(db, day)
+    if s is None:
+        # Fallback: minimal totals only, never a crash.
+        try:
+            totals = db.totals(day)
+            lines.append(f"⏱️ আজ মোট সক্রিয় সময়: {_fmt_min(totals['active'])}")
+        except Exception:
+            lines.append("⏱️ আজকের তথ্য পড়া যায়নি।")
+        return "\n".join(lines)
+    has_data = bool(s["active_seconds"] or s["top_apps"] or s["transfers"]["total"])
+    first_at, last_at = _day_bounds(db, day)
+    lines.append(f"⏱️ আজ মোট সক্রিয় সময়: {_fmt_min(s['active_seconds'])}"
+                 f" (অলস {_fmt_min(s['idle_seconds'])})")
+    if first_at:
+        lines.append(f"   প্রথম কাজ {_hhmm(first_at)} • শেষ {_hhmm(last_at)}"
+                     f" • {s['apps_used']}টি অ্যাপ ব্যবহৃত")
+    projects = [p for p in s.get("projects", []) if p.get("project") != "Untagged"]
+    if projects:
+        lines.append("🎯 প্রজেক্ট:")
+        for p in projects:
+            goal = ""
+            if p.get("goal_minutes"):
+                goal = (f" / লক্ষ্য {_fmt_min(p['goal_minutes'] * 60)}"
+                        f" ({p.get('goal_percent', 0)}%)"
+                        f"{' ✓' if p.get('goal_met') else ''}")
+            lines.append(f"  • {p['project']} — {_fmt_min(p['active_seconds'])}{goal}")
+    untagged_seconds = sum(a.get("seconds", 0)
+                           for a in s.get("untagged", {}).get("apps", []))
+    if untagged_seconds:
+        lines.append(f"🏷️ প্রজেক্ট ছাড়া সময়: {_fmt_min(untagged_seconds)}")
+    if s.get("top_apps"):
         lines.append("📌 আজকের প্রধান অ্যাপ:")
-        for a in apps:
-            lines.append(f"  • {a['app_name']} — {_fmt_min(a['active'])}")
-    try:
-        domains = db.browser_domain_totals(day)[:5]
-    except Exception:
-        domains = []
-    if domains:
-        lines.append("🌐 আজকের প্রধান সাইট:")
-        for d in domains:
-            lines.append(f"  • {d['domain']} — {_fmt_min(d['active'])}")
-    files = _recent_files(db, day)
+        for a in s["top_apps"][:6]:
+            t = f" — {a['title'][:60]}" if a.get("title") else ""
+            lines.append(f"  • {a['app']} — {_fmt_min(a['active_seconds'])}{t}")
+    b = s.get("browser", {})
+    if b.get("active_seconds") or b.get("visits"):
+        lines.append(f"🌐 ব্রাউজার: {_fmt_min(b['active_seconds'])}"
+                     f" (কাজের {_fmt_min(b['productive_seconds'])}"
+                     f" • অন্যান্য {_fmt_min(b['distracting_seconds'])})"
+                     f" • {b.get('visits', 0)} ভিজিট")
+        for d in b.get("top_domains", [])[:5]:
+            if d.get("active_seconds"):
+                mark = "কাজের" if d.get("productive") else (d.get("category") or "")
+                lines.append(f"  • {d['domain']} — {_fmt_min(d['active_seconds'])} [{mark}]")
+        for q in b.get("searches", [])[:5]:
+            lines.append(f"  🔎 {q['query']} (x{q['count']})")
+        for dl in b.get("downloads", [])[:5]:
+            size = f" ({_fmt_size(dl.get('size'))})" if dl.get("size") else ""
+            lines.append(f"  ⬇️ {dl['file']}{size} [{dl.get('state', '')}]")
+    files = _recent_files(db, day, limit=8)
     if files:
         lines.append("📁 সর্বশেষ ফাইল কাজ:")
         for f in files:
             name = (f["path"] or "").replace("\\", "/").split("/")[-1]
-            lines.append(f"  • {f['event_type']}: {name}")
-    try:
-        counts = db.transfer_counts(day)
-    except Exception:
-        counts = {}
-    total_transfers = sum(v.get("count", 0) for v in counts.values())
-    if total_transfers:
-        lines.append(f"🔒 আজ ডেটা ট্রান্সফার: {total_transfers}টি")
-        for kind, v in sorted(counts.items()):
-            lines.append(f"  • {kind}: {v.get('count', 0)}টি")
+            lines.append(f"  • {_hhmm(f['occurred_at'])} {f['event_type']}: {name}")
+    fc = s.get("file_counts", {})
+    counts = ", ".join(f"{fc.get(k, 0)} {k}"
+                       for k in ("created", "modified", "deleted", "moved")
+                       if fc.get(k))
+    if counts:
+        lines.append(f"   আজ মোট ফাইল কাজ: {counts}")
+    tr = s.get("transfers", {})
+    if tr.get("total"):
+        lines.append(f"🔒 আজ ডেটা ট্রান্সফার: {tr['total']}টি")
+        for row in tr.get("rows", [])[:6]:
+            size = f" ({_fmt_size(row.get('size'))})" if row.get("size") else ""
+            dest = f" → {row['destination']}" if row.get("destination") else ""
+            lines.append(f"  • {_hhmm(row['at'])} {row['type']} — "
+                         f"{row['file'] or row['channel']}{dest}{size}")
     try:
         alerts = db.list_alerts(date=day, limit=5)
     except Exception:
@@ -248,19 +371,34 @@ def build_status_text(db, day: str) -> str:
         lines.append("⚠️ আজকের অ্যালার্ট:")
         for a in alerts:
             lines.append(f"  • [{a['severity']}] {a['title']}")
+    if not has_data:
+        lines.append("")
+        lines.append("(আজ এখনো কোনো কাজ রেকর্ড হয়নি — এজেন্ট চালু আছে কিনা "
+                     "দেখুন: Start Menu → DeskAudit)")
     return "\n".join(lines)
 
 
+def build_today_text(db, day: str) -> str:
+    """Full-day summary for /today — the same as /status without the
+    'what is open right now' section."""
+    return build_status_text(db, day, include_open=False)
+
+
 def build_digest_text(db, day: str, since_minutes: int = 60) -> str:
-    """Bengali digest of the last `since_minutes` minutes."""
+    """Bengali digest of the last `since_minutes` minutes: apps used in
+    the window (with project split), latest window, files with times,
+    searches, downloads and transfer rows — not just counts."""
     since = datetime.now() - timedelta(minutes=since_minutes)
     lines = [f"🕐 DeskAudit — গত {since_minutes} মিনিটের আপডেট "
              f"({day} {_now_bangla()})", ""]
     sessions = _recent_sessions(db, day, since)
     if sessions:
         by_app: dict[str, float] = {}
+        by_project: dict[str, float] = {}
         for s in sessions:
             by_app[s["app_name"]] = by_app.get(s["app_name"], 0) + float(s["active"] or 0)
+            proj = s["project"] or "Untagged"
+            by_project[proj] = by_project.get(proj, 0) + float(s["active"] or 0)
         lines.append("📌 এই সময়ে ব্যবহৃত অ্যাপ:")
         for app, secs in sorted(by_app.items(), key=lambda kv: -kv[1])[:6]:
             lines.append(f"  • {app} — {_fmt_min(secs)}")
@@ -269,12 +407,17 @@ def build_digest_text(db, day: str, since_minutes: int = 60) -> str:
         if latest["window_title"]:
             lines.append(f"  সর্বশেষ উইন্ডো: {latest['app_name']} — "
                          f"{latest['window_title'][:90]}")
+        projects = [(p, v) for p, v in by_project.items() if p != "Untagged"]
+        if projects:
+            lines.append("🎯 প্রজেক্ট:")
+            for p, secs in sorted(projects, key=lambda kv: -kv[1]):
+                lines.append(f"  • {p} — {_fmt_min(secs)}")
     else:
         lines.append("📌 এই সময়ে কোনো নতুন অ্যাপ সেশন শুরু হয়নি।")
     try:
         rows = db.conn.execute(
-            """SELECT event_type, path FROM file_events
-               WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 5""",
+            """SELECT event_type, path, occurred_at FROM file_events
+               WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 8""",
             (since.isoformat(timespec="seconds"),),
         ).fetchall()
     except Exception:
@@ -283,7 +426,17 @@ def build_digest_text(db, day: str, since_minutes: int = 60) -> str:
         lines.append("📁 ফাইল কাজ:")
         for r in rows:
             name = (r["path"] or "").replace("\\", "/").split("/")[-1]
-            lines.append(f"  • {r['event_type']}: {name}")
+            lines.append(f"  • {_hhmm(r['occurred_at'])} {r['event_type']}: {name}")
+    for q in _window_searches(db, since):
+        lines.append(f"  🔎 {q['query']} (x{q['n']})")
+    for dl in _window_downloads(db, since):
+        size = f" ({_fmt_size(dl['total_bytes'])})" if dl["total_bytes"] else ""
+        lines.append(f"  ⬇️ {dl['file_name']}{size} [{dl['state']}]")
+    for t in _window_transfers(db, since):
+        size = f" ({_fmt_size(t['size_bytes'])})" if t["size_bytes"] else ""
+        dest = f" → {t['destination']}" if t["destination"] else ""
+        lines.append(f"  🔒 {_hhmm(t['occurred_at'])} {t['transfer_type']} — "
+                     f"{t['file_name'] or t['channel']}{dest}{size}")
     try:
         counts = db.transfer_counts(day)
     except Exception:
@@ -302,6 +455,30 @@ def build_digest_text(db, day: str, since_minutes: int = 60) -> str:
     if len(lines) <= 2:
         lines.append("(এই সময়ে রেকর্ড করার মতো নতুন কাজ নেই।)")
     return "\n".join(lines)
+
+
+def send_long(token: str, chat_id: str, text: str,
+              chunk_chars: int = 3900) -> bool:
+    """Send a long text as several Telegram messages, split on line
+    boundaries so no section is cut mid-line. Returns True only when
+    every chunk was accepted."""
+    if not token or not chat_id or not text:
+        return False
+    if len(text) <= chunk_chars:
+        return send_message(token, chat_id, text)
+    chunks: list[str] = []
+    cur = ""
+    for line in text.split("\n"):
+        if cur and len(cur) + len(line) + 1 > chunk_chars:
+            chunks.append(cur)
+            cur = ""
+        cur += line + "\n"
+    if cur.strip():
+        chunks.append(cur.rstrip("\n"))
+    ok = True
+    for chunk in chunks:
+        ok = send_message(token, chat_id, chunk) and ok
+    return ok
 
 
 class TelegramBot:
@@ -333,17 +510,31 @@ class TelegramBot:
             self.log.warning("Telegram send failed (check bot token / chat id).")
         return ok
 
+    def send_long(self, text: str) -> bool:
+        """Send a long report split into several messages if needed."""
+        if not self.configured:
+            return False
+        ok = send_long(self.token, self.chat_id, text)
+        if not ok:
+            self.log.warning("Telegram send failed (check bot token / chat id).")
+        return ok
+
     def send_digest(self, day: str | None = None) -> bool:
         from .utils import today_str
 
         day = day or today_str()
         minutes = int(self.settings.get("digest_minutes", 60) or 60)
-        return self.send(build_digest_text(self.db, day, minutes))
+        return self.send_long(build_digest_text(self.db, day, minutes))
 
     def send_status(self, day: str | None = None) -> bool:
         from .utils import today_str
 
-        return self.send(build_status_text(self.db, day or today_str()))
+        return self.send_long(build_status_text(self.db, day or today_str()))
+
+    def send_today(self, day: str | None = None) -> bool:
+        from .utils import today_str
+
+        return self.send_long(build_today_text(self.db, day or today_str()))
 
     def notify_alert(self, alert) -> bool:
         """Immediate notice for one critical alert (title + severity
@@ -385,9 +576,9 @@ class TelegramBot:
                               "/today — আজকের সারাংশ\n"
                               "/help — এই তালিকা")
                 elif cmd == "/status":
-                    self.send(build_status_text(self.db, today_str()))
+                    self.send_long(build_status_text(self.db, today_str()))
                 elif cmd == "/today":
-                    self.send(build_digest_text(self.db, today_str(), 60 * 24))
+                    self.send_long(build_today_text(self.db, today_str()))
                 handled += 1
             except Exception as exc:
                 self.log.warning("Telegram command failed: %s", exc)

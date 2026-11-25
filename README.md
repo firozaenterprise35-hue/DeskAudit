@@ -241,22 +241,33 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12)
+## Telegram bot + hourly email (v12, full data in v12.1)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
 Dashboard Settings (saved to `config.local.yaml` only, never git).
 
-**Telegram bot** — the bot tells you:
+**Telegram bot** — the bot tells you, with the same detail as the
+dashboard (v12.1; `/status`, `/today` and the hourly digest all use the
+shared report summary, so Telegram and the dashboard can never drift):
 - **/status** (message the bot): what is open RIGHT NOW — every visible
-  window grouped by app, the foreground app, plus today's totals, top
-  apps/sites, latest files and transfers.
-- **Scheduled digest** every `digest_minutes` (default 60): what was
-  used in the last hour.
+  window grouped by app, the foreground app; today's totals (active,
+  idle, first/last work time, apps used); projects with goal progress
+  (e.g. Office 1ঘ 20মি / লক্ষ্য 4ঘ, 33%) and untagged time; top apps
+  with window titles; browser time split productive vs distracting,
+  top domains, search queries and downloads with sizes; recent files
+  with times; data transfers with file names, destinations and sizes;
+  today's alerts. Long reports are split into several messages.
+- **Scheduled digest** every `digest_minutes` (default 60): apps and
+  projects used in the last hour, latest window, files with times,
+  searches, downloads and transfer rows.
 - **Critical alerts immediately** (e.g. a file copied out of a
   sensitive folder) — warnings and info ride in the digest.
-- **/today** — the last 24 hours. **/help** — the command list.
+- **/today** — the full-day summary (same sections as /status, without
+  the live "open now" part). **/help** — the command list.
   Only your chat id may command the bot; other chats are ignored.
+  When the day has no recorded work yet, /status says so plainly and
+  reminds you to check that the agent is running.
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -404,7 +415,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.0.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.1.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -443,17 +454,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.0-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.1-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.0.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.1.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.0.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.1.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
