@@ -179,6 +179,31 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_transfers_print_alert" type="checkbox"> Print alert</label>
       <label><input id="set_transfers_sensitive_copy_alert" type="checkbox"> Sensitive-folder copy alert</label>
     </div>
+    <h3>টেলিগ্রাম বট (Telegram)</h3>
+    <p class="muted">বটটি বাংলায় জানাবে — এখন কোন সফ্টওয়্যার খোলা আছে, আজ কী কী কাজ হয়েছে, আর ঘণ্টায় একবার আপডেট। টোকেন দেখানো হয় না। সেটআপ: Telegram-এ @BotFather → /newbot (টোকেন নিন), বটকে /start পাঠান, তারপর <code>api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> থেকে chat.id নিন। বটে লিখুন /status — এখন কী চলছে জানাবে।</p>
+    <div class="setgrid">
+      <label><input id="set_telegram_enabled" type="checkbox"> Telegram বট চালু</label>
+      <label><span>Bot token <b id="telegramTokenStatus"></b></span><input id="set_telegram_bot_token" type="password" autocomplete="off" placeholder="নতুন টোকেন লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_telegram_clear_token" type="checkbox"> টোকেন মুছে ফেলুন</label></label>
+      <label><span>Chat id</span><input id="set_telegram_chat_id" type="text" placeholder="যেমন 123456789"></label>
+      <label><span>Command poll (seconds, 10–600)</span><input id="set_telegram_poll_seconds" type="number" min="10" max="600"></label>
+      <label><span>Digest (minutes, 5–1440)</span><input id="set_telegram_digest_minutes" type="number" min="5" max="1440"></label>
+      <label><input id="set_telegram_notify_critical" type="checkbox"> Critical অ্যালার্ট সাথে সাথে পাঠান</label>
+    </div>
+    <button id="testTelegramBtn" type="button">📩 Telegram পরীক্ষা বার্তা পাঠান</button><span id="telegramTestStatus"></span>
+    <h3>ঘণ্টার ইমেইল (Hourly email)</h3>
+    <p class="muted">প্রতি ঘণ্টায় একবার আপডেট ইমেইল যাবে — ব্যবহৃত অ্যাপ, ফাইল কাজ, ডেটা ট্রান্সফার, অ্যালার্ট। Gmail-এর জন্য 2-Step Verification চালু করে App Password বানান (Google Account → Security → App passwords), সেই ১৬ অক্ষরের পাসওয়ার্ড এখানে বসান। পাসওয়ার্ড দেখানো হয় না।</p>
+    <div class="setgrid">
+      <label><input id="set_email_enabled" type="checkbox"> ঘণ্টার ইমেইল চালু</label>
+      <label><span>SMTP host</span><input id="set_email_smtp_host" type="text" placeholder="smtp.gmail.com"></label>
+      <label><span>SMTP port (1–65535)</span><input id="set_email_smtp_port" type="number" min="1" max="65535"></label>
+      <label><span>SMTP user (ইমেইল ঠিকানা)</span><input id="set_email_smtp_user" type="text"></label>
+      <label><span>App password <b id="emailPasswordStatus"></b></span><input id="set_email_smtp_password" type="password" autocomplete="off" placeholder="নতুন পাসওয়ার্ড লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_email_clear_password" type="checkbox"> পাসওয়ার্ড মুছে ফেলুন</label></label>
+      <label><span>From (খালি হলে SMTP user)</span><input id="set_email_from_addr" type="text"></label>
+      <label><span>To (আপডেট যাবে যেখানে)</span><input id="set_email_to_addr" type="text"></label>
+      <label><span>প্রতি কত মিনিটে (5–1440)</span><input id="set_email_interval_minutes" type="number" min="5" max="1440"></label>
+      <label><input id="set_email_use_tls" type="checkbox"> TLS ব্যবহার করুন</label>
+    </div>
+    <button id="testEmailBtn" type="button">✉️ পরীক্ষা ইমেইল পাঠান</button><span id="emailTestStatus"></span>
     <h3>ব্যাকআপ (Backup)</h3>
     <div class="setgrid">
       <label><span>Keep days (1–365)</span><input id="set_backup_keep_days" type="number" min="1" max="365"></label>
@@ -359,6 +384,27 @@ async function loadSettings(){
     setChk('set_transfers_print_alert',s.transfers.print_alert);
     setChk('set_transfers_sensitive_copy_alert',s.transfers.sensitive_copy_alert);
   }
+  if(s.telegram){
+    setChk('set_telegram_enabled',s.telegram.enabled);
+    $('telegramTokenStatus').textContent=s.telegram.bot_token_set?'(টোকেন সেট করা আছে)':'(টোকেন সেট করা নেই)';
+    $('set_telegram_bot_token').value='';
+    $('set_telegram_chat_id').value=s.telegram.chat_id||'';
+    setNum('set_telegram_poll_seconds',s.telegram.poll_seconds);
+    setNum('set_telegram_digest_minutes',s.telegram.digest_minutes);
+    setChk('set_telegram_notify_critical',s.telegram.notify_critical);
+  }
+  if(s.email){
+    setChk('set_email_enabled',s.email.enabled);
+    $('set_email_smtp_host').value=s.email.smtp_host||'';
+    setNum('set_email_smtp_port',s.email.smtp_port);
+    $('set_email_smtp_user').value=s.email.smtp_user||'';
+    $('emailPasswordStatus').textContent=s.email.smtp_password_set?'(পাসওয়ার্ড সেট করা আছে)':'(পাসওয়ার্ড সেট করা নেই)';
+    $('set_email_smtp_password').value='';
+    $('set_email_from_addr').value=s.email.from_addr||'';
+    $('set_email_to_addr').value=s.email.to_addr||'';
+    setNum('set_email_interval_minutes',s.email.interval_minutes);
+    setChk('set_email_use_tls',s.email.use_tls);
+  }
   // Loaded successfully — only now is Save safe: before this, every
   // checkbox reads as unchecked and a save would silently disable
   // browser tracking, alerts and the transfer monitor.
@@ -396,14 +442,47 @@ async function saveSettings(){
   updates.alerts.enabled=$('set_alerts_enabled').checked;
   updates.alerts.notify=$('set_alerts_notify').checked;
   updates.backup.backup_on_start=$('set_backup_on_start').checked;
+  updates.telegram={enabled:$('set_telegram_enabled').checked,notify_critical:$('set_telegram_notify_critical').checked};
+  const token=$('set_telegram_bot_token').value.trim();
+  if($('set_telegram_clear_token').checked) updates.telegram.bot_token='';
+  else if(token) updates.telegram.bot_token=token;
+  const chatId=$('set_telegram_chat_id').value.trim(); if(chatId) updates.telegram.chat_id=chatId;
+  const tgInts={poll_seconds:'set_telegram_poll_seconds',digest_minutes:'set_telegram_digest_minutes'};
+  for(const [k,id] of Object.entries(tgInts)){const v=num(id); if(v!==null) updates.telegram[k]=v}
+  updates.email={enabled:$('set_email_enabled').checked,use_tls:$('set_email_use_tls').checked};
+  const pw=$('set_email_smtp_password').value.trim();
+  if($('set_email_clear_password').checked) updates.email.smtp_password='';
+  else if(pw) updates.email.smtp_password=pw;
+  const host=$('set_email_smtp_host').value.trim(); if(host) updates.email.smtp_host=host;
+  const user=$('set_email_smtp_user').value.trim(); if(user) updates.email.smtp_user=user;
+  const from=$('set_email_from_addr').value.trim(); if(from) updates.email.from_addr=from;
+  const to=$('set_email_to_addr').value.trim(); if(to) updates.email.to_addr=to;
+  const port=num('set_email_smtp_port'); if(port!==null) updates.email.smtp_port=port;
+  const interval=num('set_email_interval_minutes'); if(interval!==null) updates.email.interval_minutes=interval;
   $('setStatus').textContent='Saving…';
   try{
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)}).then(x=>x.json());
-    if(r.ok){ $('setStatus').textContent='✅ Saved to config.local.yaml. Restart the agent and dashboard to apply.'; $('set_llm_api_key').value=''; $('set_llm_clear_key').checked=false; loadSettings(); }
+    if(r.ok){ $('setStatus').textContent='✅ Saved to config.local.yaml. Restart the agent and dashboard to apply.'; $('set_llm_api_key').value=''; $('set_llm_clear_key').checked=false; $('set_telegram_bot_token').value=''; $('set_telegram_clear_token').checked=false; $('set_email_smtp_password').value=''; $('set_email_clear_password').checked=false; loadSettings(); }
     else $('setStatus').textContent='❌ '+(r.error||'Could not save.');
   }catch(e){ $('setStatus').textContent='❌ Could not save settings.'; }
 }
+async function testTelegram(){
+  $('telegramTestStatus').textContent='পাঠানো হচ্ছে…';
+  try{
+    const r=await fetch('/api/telegram-test',{method:'POST'}).then(x=>x.json());
+    $('telegramTestStatus').textContent=r.ok?'✅ পরীক্ষা বার্তা পাঠানো হয়েছে — Telegram দেখুন।':'❌ '+(r.error||'পাঠানো যায়নি।');
+  }catch(e){ $('telegramTestStatus').textContent='❌ পাঠানো যায়নি।'; }
+}
+async function testEmail(){
+  $('emailTestStatus').textContent='পাঠানো হচ্ছে…';
+  try{
+    const r=await fetch('/api/email-test',{method:'POST'}).then(x=>x.json());
+    $('emailTestStatus').textContent=r.ok?'✅ পরীক্ষা ইমেইল পাঠানো হয়েছে — ইনবক্স দেখুন।':'❌ '+(r.error||'পাঠানো যায়নি।');
+  }catch(e){ $('emailTestStatus').textContent='❌ পাঠানো যায়নি।'; }
+}
 $('saveSettingsBtn').onclick=saveSettings;
+$('testTelegramBtn').onclick=testTelegram;
+$('testEmailBtn').onclick=testEmail;
 load();
 loadSettings();
 </script>

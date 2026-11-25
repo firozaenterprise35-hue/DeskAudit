@@ -94,6 +94,8 @@ class Config:
     dashboard_on_start: bool = True
     secret_gate: dict = field(default_factory=dict)
     transfers: dict = field(default_factory=dict)
+    telegram: dict = field(default_factory=dict)
+    email: dict = field(default_factory=dict)
     project_root: Path = Path(".")
 
     @classmethod
@@ -140,6 +142,13 @@ class Config:
         from .transfers import DEFAULT_TRANSFERS
 
         transfers = {**DEFAULT_TRANSFERS, **(merged.get("transfers", {}) or {})}
+        # Telegram + email: same pattern. Secrets (bot_token, smtp_password)
+        # belong in config.local.yaml, never config.yaml (tracked by git).
+        from .emailer import DEFAULT_EMAIL
+        from .telegram import DEFAULT_TELEGRAM
+
+        telegram = {**DEFAULT_TELEGRAM, **(merged.get("telegram", {}) or {})}
+        email = {**DEFAULT_EMAIL, **(merged.get("email", {}) or {})}
         return cls(
             poll_interval_seconds=_coerce_int(merged.get("poll_interval_seconds", 5), 5),
             idle_threshold_seconds=_coerce_int(merged.get("idle_threshold_seconds", 300), 300),
@@ -176,6 +185,8 @@ class Config:
             dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
             secret_gate={**DEFAULT_SECRET_GATE, **(merged.get("secret_gate", {}) or {})},
             transfers=transfers,
+            telegram=telegram,
+            email=email,
             project_root=root,
         )
 

@@ -148,6 +148,10 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     last_browser_poll = 0.0
     last_alert_check = 0.0
     last_transfer_scan = 0.0
+    last_telegram_poll = 0.0
+    last_telegram_digest = 0.0
+    last_email = 0.0
+    telegram_bot = None
     # Coerce once at startup: a bad poll_seconds used to raise inside
     # the loop condition every 5 s and kill the agent silently.
     try:
@@ -214,6 +218,31 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                      ", ".join(transfer_monitor.sensitive_folders) or "none set")
         except Exception as exc:  # transfers must never crash the agent
             log.warning("Data Transfer Monitor did not start: %s", exc)
+
+    # Telegram bot: outbound status/digests + critical alerts to the
+    # owner's chat. Disabled until bot_token + chat_id are set.
+    if (config.telegram or {}).get("enabled", False):
+        try:
+            from deskaudit.telegram import TelegramBot
+
+            telegram_bot = TelegramBot(db, config.telegram, log)
+            if telegram_bot.configured:
+                log.info("Telegram bot on: digests every %s min, commands polled.",
+                         telegram_bot.settings.get("digest_minutes", 60))
+            else:
+                log.warning("Telegram enabled but bot_token/chat_id missing — "
+                            "set them in Dashboard Settings -> Telegram.")
+        except Exception as exc:  # the bot must never crash the agent
+            log.warning("Telegram bot did not start: %s", exc)
+    if (config.email or {}).get("enabled", False):
+        from deskaudit.emailer import configured as _email_configured
+
+        if _email_configured(config.email):
+            log.info("Hourly email digest on: every %s min to %s.",
+                     config.email.get("interval_minutes", 60), config.email.get("to_addr"))
+        else:
+            log.warning("Email enabled but smtp_user/smtp_password/to_addr missing — "
+                        "set them in Dashboard Settings -> Email.")
 
     # The agent also serves the dashboard, so the secret gate can open it
     # any time without a second process or console window.
@@ -300,8 +329,63 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                         log.warning("ALERT [%s] %s", a.severity, a.title)
                     if new and config.alerts.get("notify", True):
                         notify_windows(new)
+                    if new and telegram_bot is not None:
+                        # Critical alerts go to Telegram immediately;
+                        # warnings/info ride along in the hourly digest.
+                        for a in new:
+                            if a.severity == "critical":
+                                try:
+                                    telegram_bot.notify_alert(a)
+                                except Exception as exc:
+                                    log.warning("Telegram alert failed: %s", exc)
                 except Exception as exc:  # alerts must never crash the agent
                     log.warning("Alert check failed: %s", exc)
+            # Telegram: answer /status etc. + scheduled digest.
+            if telegram_bot is not None:
+                try:
+                    telegram_poll = int(telegram_bot.settings.get("poll_seconds", 30) or 30)
+                except (TypeError, ValueError):
+                    telegram_poll = 30
+                telegram_poll = max(telegram_poll, 10)
+                if now_ts - last_telegram_poll >= telegram_poll:
+                    last_telegram_poll = now_ts
+                    try:
+                        telegram_bot.poll_commands()
+                    except Exception as exc:
+                        log.warning("Telegram poll failed: %s", exc)
+                try:
+                    digest_minutes = int(telegram_bot.settings.get("digest_minutes", 60) or 60)
+                except (TypeError, ValueError):
+                    digest_minutes = 60
+                if digest_minutes > 0 and now_ts - last_telegram_digest >= digest_minutes * 60:
+                    last_telegram_digest = now_ts
+                    try:
+                        if telegram_bot.send_digest():
+                            log.info("Telegram digest sent.")
+                    except Exception as exc:
+                        log.warning("Telegram digest failed: %s", exc)
+            # Email: one digest every interval_minutes.
+            if (config.email or {}).get("enabled", False):
+                try:
+                    interval = int(config.email.get("interval_minutes", 60) or 60)
+                except (TypeError, ValueError):
+                    interval = 60
+                if interval > 0 and now_ts - last_email >= interval * 60:
+                    last_email = now_ts
+                    try:
+                        from deskaudit.emailer import (build_hourly_email, configured,
+                                                       send_email)
+
+                        if configured(config.email):
+                            subject, text, html = build_hourly_email(
+                                db, today_str(), interval)
+                            ok, err = send_email(config.email, subject, text, html)
+                            if ok:
+                                log.info("Hourly email sent.")
+                            else:
+                                log.warning("Hourly email failed: %s", err)
+                    except Exception as exc:
+                        log.warning("Hourly email failed: %s", exc)
             if browser_info:
                 log.info("Browser: %s — %s [%s]", browser_info["browser"],
                          browser_info["title"] or "(no title)",
@@ -448,6 +532,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unread", action="store_true", help="With --alerts-list, unread only")
     parser.add_argument("--transfers", action="store_true",
                         help="Scan for data transfers and list today's (USB / cloud / email / print)")
+    parser.add_argument("--telegram-test", action="store_true",
+                        help="Send a test message to the configured Telegram chat")
+    parser.add_argument("--telegram-now", action="store_true",
+                        help="Send the current status to Telegram now")
+    parser.add_argument("--email-test", action="store_true",
+                        help="Send a test email to the configured address")
+    parser.add_argument("--email-now", action="store_true",
+                        help="Send the hourly email digest now")
     parser.add_argument("--notify", action="store_true",
                         help="With --alerts, also try a Windows notification")
     parser.add_argument("--ai-summary", action="store_true",
@@ -743,6 +835,53 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {r['occurred_at'][11:16]} {r['transfer_type']} — "
                       f"{r['file_name'] or r['channel']} -> {r['destination']}{size}")
         return 0
+
+    if args.telegram_test or args.telegram_now:
+        from deskaudit.telegram import TelegramBot, send_message
+
+        db = Database(config.db_path)
+        try:
+            bot = TelegramBot(db, config.telegram, log)
+            if not bot.configured:
+                print("Telegram is not configured yet — set bot_token + chat_id in "
+                      "Dashboard Settings -> Telegram (or config.local.yaml), then retry.")
+                return 1
+            if args.telegram_test:
+                ok = send_message(bot.token, bot.chat_id,
+                                  "✅ DeskAudit Telegram — পরীক্ষা বার্তা। বট সংযুক্ত আছে।")
+                print("Test message sent." if ok else
+                      "Could not send — check the bot token and chat id, "
+                      "and make sure you sent /start to the bot.")
+                return 0 if ok else 1
+            ok = bot.send_status()
+            print("Status sent to Telegram." if ok else "Could not send the status.")
+            return 0 if ok else 1
+        finally:
+            db.close()
+
+    if args.email_test or args.email_now:
+        from deskaudit.emailer import build_hourly_email, configured, send_email
+
+        db = Database(config.db_path)
+        try:
+            if not configured(config.email):
+                print("Email is not configured yet — set smtp_user, smtp_password and "
+                      "to_addr in Dashboard Settings -> Email (or config.local.yaml), "
+                      "then retry.")
+                return 1
+            if args.email_test:
+                ok, err = send_email(config.email, "DeskAudit — পরীক্ষা ইমেইল",
+                                     "DeskAudit ইমেইল পরীক্ষা — এই ঠিকানায় ঘণ্টায় "
+                                     "একবার আপডেট আসবে।")
+                print("Test email sent." if ok else f"Could not send email: {err}")
+                return 0 if ok else 1
+            subject, text, html = build_hourly_email(
+                db, today_str(), int(config.email.get("interval_minutes", 60) or 60))
+            ok, err = send_email(config.email, subject, text, html)
+            print("Digest email sent." if ok else f"Could not send email: {err}")
+            return 0 if ok else 1
+        finally:
+            db.close()
 
     if args.alerts_list:
         db = Database(config.db_path)

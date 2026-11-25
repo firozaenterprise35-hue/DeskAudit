@@ -153,3 +153,36 @@ llm:
   api_key: ""             # leave empty to use the env var instead
   model: "gemini-3.5-flash-lite"
   base_url: ""            # only for openai-compatible providers
+
+# --- Telegram bot -----------------------------------------------------
+# Outbound Bengali status/digests + critical-alert notices to ONE chat.
+# Metadata only: app/window/file names and times — never typed text or
+# message content. Setup: @BotFather -> /newbot (token), send /start to
+# the bot, read chat.id from https://api.telegram.org/bot<TOKEN>/getUpdates
+# (or @userinfobot). Put token + chat_id in config.local.yaml or in
+# Dashboard Settings -> Telegram. NEVER put the token in this file.
+# Commands the bot answers: /status (what is open now), /today, /help.
+telegram:
+  enabled: false
+  bot_token: ""
+  chat_id: ""
+  poll_seconds: 30        # how often the agent checks for /status etc.
+  digest_minutes: 60      # scheduled digest cadence (minutes)
+  notify_critical: true   # send critical alerts to Telegram immediately
+
+# --- Hourly email digest ----------------------------------------------
+# One digest email every interval_minutes to your own address (SMTP).
+# Gmail route: 2-Step Verification on, then an App Password for
+# DeskAudit (Google Account -> Security -> App passwords). Put the
+# address + 16-character app password in config.local.yaml or in
+# Dashboard Settings -> Email. NEVER put the password in this file.
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  from_addr: ""
+  to_addr: ""
+  interval_minutes: 60
+  use_tls: true

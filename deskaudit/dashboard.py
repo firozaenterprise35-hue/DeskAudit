@@ -288,6 +288,10 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("transfers", "cloud_alert_minutes"): (1, 1440),
     ("transfers", "communication_alert_minutes"): (1, 1440),
     ("transfers", "large_transfer_mb"): (1, 100000),
+    ("telegram", "poll_seconds"): (10, 600),
+    ("telegram", "digest_minutes"): (5, 1440),
+    ("email", "smtp_port"): (1, 65535),
+    ("email", "interval_minutes"): (5, 1440),
 }
 _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("agent", "browser_enabled"),
@@ -303,6 +307,10 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("transfers", "usb_alert"),
     ("transfers", "print_alert"),
     ("transfers", "sensitive_copy_alert"),
+    ("telegram", "enabled"),
+    ("telegram", "notify_critical"),
+    ("email", "enabled"),
+    ("email", "use_tls"),
 }
 # List settings: the UI sends one comma-separated string, stored as a list.
 _LIST_SETTINGS: set[tuple[str, str]] = {
@@ -354,6 +362,13 @@ def get_settings(config_path: str | Path) -> dict:
 
     gate = {**DEFAULT_SECRET_GATE, **(cfg.secret_gate or {})}
     transfers = {**DEFAULT_TRANSFERS, **(cfg.transfers or {})}
+    from .emailer import DEFAULT_EMAIL
+    from .telegram import DEFAULT_TELEGRAM
+
+    telegram = {**DEFAULT_TELEGRAM, **(cfg.telegram or {})}
+    email = {**DEFAULT_EMAIL, **(cfg.email or {})}
+    local_telegram = local.get("telegram") if isinstance(local.get("telegram"), dict) else {}
+    local_email = local.get("email") if isinstance(local.get("email"), dict) else {}
     return {
         "llm": {
             "provider": str(cfg.llm.get("provider") or "gemini"),
@@ -407,6 +422,27 @@ def get_settings(config_path: str | Path) -> dict:
             "print_alert": bool(transfers.get("print_alert", True)),
             "sensitive_copy_alert": bool(transfers.get("sensitive_copy_alert", True)),
         },
+        # Bot token / SMTP password are write-only (like the LLM key):
+        # GET reports only whether one is set, never the value.
+        "telegram": {
+            "enabled": bool(telegram.get("enabled", False)),
+            "bot_token_set": bool(local_telegram.get("bot_token")),
+            "chat_id": str(telegram.get("chat_id") or ""),
+            "poll_seconds": int(telegram.get("poll_seconds", 30)),
+            "digest_minutes": int(telegram.get("digest_minutes", 60)),
+            "notify_critical": bool(telegram.get("notify_critical", True)),
+        },
+        "email": {
+            "enabled": bool(email.get("enabled", False)),
+            "smtp_host": str(email.get("smtp_host") or "smtp.gmail.com"),
+            "smtp_port": int(email.get("smtp_port", 587)),
+            "smtp_user": str(email.get("smtp_user") or ""),
+            "smtp_password_set": bool(local_email.get("smtp_password")),
+            "from_addr": str(email.get("from_addr") or ""),
+            "to_addr": str(email.get("to_addr") or ""),
+            "interval_minutes": int(email.get("interval_minutes", 60)),
+            "use_tls": bool(email.get("use_tls", True)),
+        },
         "config_path": cfg_path.name,
         "local_path": _local_path(cfg_path).name,
         "local_exists": _local_path(cfg_path).exists(),
@@ -431,7 +467,8 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     new_local: dict[str, dict] = {}
     errors: list[str] = []
     for section, values in updates.items():
-        if section not in ("llm", "agent", "alerts", "backup", "secret_gate", "transfers"):
+        if section not in ("llm", "agent", "alerts", "backup", "secret_gate", "transfers",
+                           "telegram", "email"):
             continue
         if not isinstance(values, dict):
             errors.append(f"{section} must be an object")
@@ -460,6 +497,41 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
                     errors.append("secret_gate.code must be 1-8 digits")
                 else:
                     merged[key] = value
+            elif section == "telegram" and key == "bot_token":
+                # Write-only secret, like the LLM key: empty clears it.
+                if not isinstance(value, str):
+                    errors.append("telegram.bot_token must be a string")
+                elif value == "":
+                    merged[key] = None
+                elif not (10 <= len(value) <= 200):
+                    errors.append("telegram.bot_token looks too short/long to be a bot token")
+                else:
+                    merged[key] = value
+            elif section == "telegram" and key == "chat_id":
+                if not isinstance(value, str) or not value.strip():
+                    errors.append("telegram.chat_id must be a non-empty id")
+                elif len(value) > 64:
+                    errors.append("telegram.chat_id is too long")
+                else:
+                    merged[key] = value.strip()
+            elif section == "email" and key == "smtp_password":
+                if not isinstance(value, str):
+                    errors.append("email.smtp_password must be a string")
+                elif value == "":
+                    merged[key] = None  # clear
+                elif not (1 <= len(value) <= 200):
+                    errors.append("email.smtp_password must be 1-200 characters")
+                else:
+                    merged[key] = value
+            elif section == "email" and key in ("smtp_host", "smtp_user", "from_addr", "to_addr"):
+                if not isinstance(value, str):
+                    errors.append(f"email.{key} must be a string")
+                elif len(value) > 200:
+                    errors.append(f"email.{key} is too long")
+                elif key in ("from_addr", "to_addr") and value and "@" not in value:
+                    errors.append(f"email.{key} must be an email address")
+                else:
+                    merged[key] = value.strip()
             elif (section, key) in _LIST_SETTINGS:
                 # Comma-separated string from the UI -> list of folders.
                 if not isinstance(value, str):
@@ -490,11 +562,11 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     if not new_local:
         return get_settings(cfg_path)
     # File layout differs from the API grouping: llm/alerts/secret_gate/
-    # transfers are nested dicts in the yaml, but agent/backup keys live
-    # at the top level (poll_interval_seconds, backup_keep_days, ...).
+    # transfers/telegram/email are nested dicts in the yaml, but
+    # agent/backup keys live at the top level (poll_interval_seconds, ...).
     local = _read_local_raw(cfg_path)
     for section, values in new_local.items():
-        if section in ("llm", "alerts", "secret_gate", "transfers"):
+        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email"):
             current = local.get(section)
             if not isinstance(current, dict):
                 current = {}
@@ -704,6 +776,49 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
 
         def _do_POST(self):
             parsed = urlparse(self.path)
+            if parsed.path in ("/api/telegram-test", "/api/email-test"):
+                if config_path is None:
+                    self._send_json({"ok": False, "error": "settings unavailable"}, 500)
+                    return
+                try:
+                    from .config import Config
+
+                    cfg = Config.load(config_path)
+                    db = Database(db_path)
+                    try:
+                        if parsed.path == "/api/telegram-test":
+                            from .telegram import TelegramBot, send_message
+
+                            bot = TelegramBot(db, cfg.telegram)
+                            if not bot.configured:
+                                self._send_json({"ok": False, "error":
+                                    "Telegram is not configured yet — set bot_token + "
+                                    "chat_id in Settings -> Telegram first."}, 400)
+                                return
+                            ok = send_message(bot.token, bot.chat_id,
+                                              "✅ DeskAudit Telegram — পরীক্ষা বার্তা। "
+                                              "বট সংযুক্ত আছে।")
+                            self._send_json({"ok": ok, "error":
+                                "" if ok else "Could not send — check the bot token "
+                                "and chat id, and make sure you sent /start to the bot."})
+                        else:
+                            from .emailer import configured, send_email
+
+                            if not configured(cfg.email):
+                                self._send_json({"ok": False, "error":
+                                    "Email is not configured yet — set smtp_user, "
+                                    "smtp_password and to_addr in Settings -> Email first."},
+                                    400)
+                                return
+                            ok, err = send_email(cfg.email, "DeskAudit — পরীক্ষা ইমেইল",
+                                                 "DeskAudit ইমেইল পরীক্ষা — এই ঠিকানায় "
+                                                 "ঘণ্টায় একবার আপডেট আসবে।")
+                            self._send_json({"ok": ok, "error": err})
+                    finally:
+                        db.close()
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 500)
+                return
             if parsed.path != "/api/settings":
                 self._send_json({"ok": False, "error": "unknown route"}, 404)
                 return

@@ -241,6 +241,46 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
+## Telegram bot + hourly email (v12)
+
+The agent can report to you while you are away — in Bengali, on your
+phone and in your inbox. Both are off until you configure them in
+Dashboard Settings (saved to `config.local.yaml` only, never git).
+
+**Telegram bot** — the bot tells you:
+- **/status** (message the bot): what is open RIGHT NOW — every visible
+  window grouped by app, the foreground app, plus today's totals, top
+  apps/sites, latest files and transfers.
+- **Scheduled digest** every `digest_minutes` (default 60): what was
+  used in the last hour.
+- **Critical alerts immediately** (e.g. a file copied out of a
+  sensitive folder) — warnings and info ride in the digest.
+- **/today** — the last 24 hours. **/help** — the command list.
+  Only your chat id may command the bot; other chats are ignored.
+
+Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
+Send `/start` to your new bot, then open
+`https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
+`chat.id` (or ask **@userinfobot** for your id). Paste both in Dashboard
+Settings → Telegram, press "📩 Telegram পরীক্ষা বার্তা পাঠান", restart
+the agent. CLI: `DeskAudit.exe --telegram-test` / `--telegram-now`.
+
+**Hourly email** — one digest every `interval_minutes` (default 60):
+apps used, file work, transfers, alerts — plain text + a small HTML
+table. Gmail route: turn on 2-Step Verification, then create an App
+Password for DeskAudit (Google Account → Security → App passwords) and
+paste the address + 16-character app password in Dashboard Settings →
+Email, press "✉️ পরীক্ষা ইমেইল পাঠান", restart the agent.
+CLI: `DeskAudit.exe --email-test` / `--email-now`.
+
+**What is NOT in these messages:** the content of what anyone typed
+or sent. The bot can say "Word — রিপোর্ট.docx - Word" (which document
+is open) and "12 minutes on WhatsApp Web" — never the text that was
+typed or written. No keystroke logging, no message/email text, no
+passwords, no clipboard. Same metadata-only rule as the rest of
+DeskAudit. If the bot or the mail server is unreachable, the agent
+logs a warning and keeps running — notifications never crash it.
+
 ## Daily AI summary + weekly review — everything it covers
 
 Local, rule-based Bengali narrative — no LLM, no API key, no internet.
@@ -304,6 +344,8 @@ DeskAudit/
 │   ├── backup.py            # SQLite online backup / restore / pruning
 │   ├── secret_gate.py       # 4 desktop clicks + code opens the dashboard
 │   ├── transfers.py         # Data Transfer Monitor: USB / cloud / email / print / sensitive folders
+│   ├── telegram.py          # Telegram bot: status / digest / critical alerts, /status /today commands
+│   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
 │   ├── dashboard.py         # Web dashboard: data API + stdlib HTTP server
 │   ├── dashboard_static/
 │   │   └── index.html       # Dashboard page: cards, charts, tables, filters
@@ -333,6 +375,8 @@ DeskAudit/
     ├── test_llm.py          # LLM payload + provider call tests (mocked network)
     ├── test_secret_gate.py  # Secret gate state machine tests
     ├── test_transfers.py    # Data Transfer Monitor tests
+    ├── test_audit_v11_1.py  # v11.1 re-audit regression tests (19 tests)
+    ├── test_telegram.py     # Telegram bot + hourly email tests (mocked network)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -360,7 +404,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-11.1.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.0.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -399,17 +443,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v11.1-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.0-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-11.1.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.0.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-11.1.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.0.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

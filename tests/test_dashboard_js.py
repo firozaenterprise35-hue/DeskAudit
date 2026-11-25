@@ -118,8 +118,23 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   check('settings loaded (poll interval)', String(t.$('set_poll_interval_seconds').value) === '5');
   check('export links set',
     t.$('expMd').href.includes('/api/export?date=') && t.$('expCsv').href.includes('format=csv'));
+  check('telegram settings loaded', String(t.$('set_telegram_digest_minutes').value) === '60');
+  check('telegram token status shows unset', t.$('telegramTokenStatus').textContent.includes('নেই'));
+  check('email settings loaded', String(t.$('set_email_interval_minutes').value) === '60');
+  check('email smtp host default', t.$('set_email_smtp_host').value === 'smtp.gmail.com');
+  const tgTest = await fetch('/api/telegram-test', { method: 'POST' }).then(x => x.json());
+  check('telegram test reports not configured', tgTest.ok === false && String(tgTest.error).includes('not configured'), JSON.stringify(tgTest));
+  const emTest = await fetch('/api/email-test', { method: 'POST' }).then(x => x.json());
+  check('email test reports not configured', emTest.ok === false && String(emTest.error).includes('not configured'), JSON.stringify(emTest));
+  t.$('set_telegram_chat_id').value = '999';
+  t.$('set_email_to_addr').value = 'me@example.com';
   await t.saveSettings();
   check('settings save reports Saved', t.$('setStatus').textContent.includes('Saved'));
+  const saved = await fetch('/api/settings').then(x => x.json());
+  check('telegram chat id persisted', saved.telegram.chat_id === '999', saved.telegram.chat_id);
+  check('email to_addr persisted', saved.email.to_addr === 'me@example.com', saved.email.to_addr);
+  check('telegram token never returned', !('bot_token' in saved.telegram));
+  check('smtp password never returned', !('smtp_password' in saved.email));
   // Save is only enabled after settings loaded successfully: with the
   // flag reset it must refuse instead of sending unchecked checkboxes.
   t.state.settingsLoaded = false;
