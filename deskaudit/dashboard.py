@@ -43,7 +43,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
+import time
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -301,6 +303,7 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("agent", "track_searches"),
     ("agent", "browser_receiver_enabled"),
     ("agent", "dashboard_on_start"),
+    ("agent", "dashboard_lock"),
     ("alerts", "enabled"),
     ("alerts", "notify"),
     ("backup", "backup_on_start"),
@@ -393,6 +396,7 @@ def get_settings(config_path: str | Path) -> dict:
             "browser_receiver_enabled": bool(cfg.browser_receiver_enabled),
             "browser_receiver_port": int(cfg.browser_receiver_port),
             "dashboard_on_start": bool(cfg.dashboard_on_start),
+            "dashboard_lock": bool(cfg.dashboard_lock),
         },
         "secret_gate": {
             "enabled": bool(gate.get("enabled", True)),
@@ -607,19 +611,91 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
 
 STATIC_DIR = Path(__file__).resolve().parent / "dashboard_static"
 
+SESSION_COOKIE = "deskaudit_session"
+SESSION_SECONDS = 8 * 3600  # unlock lasts one work day, then the PIN is asked again
+MAX_UNLOCK_FAILURES = 5     # then a short lockout (brute-force guard)
+FAILURE_WINDOW_SECONDS = 5 * 60
+LOCKOUT_SECONDS = 30
+
+
+class DashboardLock:
+    """PIN lock for the dashboard (v12.6).
+
+    The dashboard shows a plain white lock page until the owner types
+    the code (the secret-gate code, default 1122) and presses Enter.
+    Unlocking mints a random session token kept in memory (never the
+    code itself) and set as an HttpOnly cookie; every data API checks
+    it, so the lock protects the data, not just the page. Sessions die
+    with the server process, and 5 wrong codes in 5 minutes lock
+    unlocking out for 30 seconds.
+    """
+
+    def __init__(self, code: str | None = "1122", enabled: bool = True) -> None:
+        self.code = str(code or "")
+        self.enabled = bool(enabled) and bool(self.code)
+        self._sessions: dict[str, float] = {}
+        self._failures: list[float] = []
+
+    def is_unlocked(self, cookies: dict[str, str]) -> bool:
+        if not self.enabled:
+            return True
+        token = cookies.get(SESSION_COOKIE) or ""
+        expiry = self._sessions.get(token)
+        if expiry is None:
+            return False
+        if expiry < time.time():
+            self._sessions.pop(token, None)
+            return False
+        return True
+
+    def unlock(self, code: str) -> tuple[bool, str]:
+        """(ok, token-or-reason): token on success, "wrong"/"locked_out"."""
+        if not self.enabled:
+            return True, ""
+        now = time.time()
+        self._failures = [t for t in self._failures
+                          if now - t < FAILURE_WINDOW_SECONDS]
+        if len(self._failures) >= MAX_UNLOCK_FAILURES:
+            return False, "locked_out"
+        if str(code or "") == self.code:
+            self._failures.clear()
+            token = secrets.token_hex(16)
+            self._sessions[token] = now + SESSION_SECONDS
+            return True, token
+        self._failures.append(now)
+        return False, "wrong"
+
+    def lock(self, cookies: dict[str, str]) -> None:
+        token = cookies.get(SESSION_COOKIE) or ""
+        self._sessions.pop(token, None)
+
+
+def _parse_cookies(headers) -> dict[str, str]:
+    try:
+        from http.cookies import SimpleCookie
+
+        jar = SimpleCookie()
+        jar.load(headers.get("Cookie") or "")
+        return {k: morsel.value for k, morsel in jar.items()}
+    except Exception:
+        return {}
+
 
 def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dict | None = None,
                  config_path: Path | None = None,
-                 transfers_settings: dict | None = None):
+                 transfers_settings: dict | None = None,
+                 lock: DashboardLock | None = None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # keep console quiet
             pass
 
-        def _send_json(self, payload, code: int = 200):
+        def _send_json(self, payload, code: int = 200, extra_headers: dict | None = None):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self._responded = True
             self.wfile.write(body)
@@ -655,6 +731,16 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
             get = lambda k, default=None: (query.get(k) or [default])[0]
 
             if parsed.path in ("/", "/index.html"):
+                # PIN lock (v12.6): a white lock page until the owner
+                # types the code and presses Enter. The lock page itself
+                # is the only HTML served while locked.
+                if lock is not None and not lock.is_unlocked(_parse_cookies(self.headers)):
+                    page = STATIC_DIR / "lock.html"
+                    if page.exists():
+                        self._send_file(page, "text/html; charset=utf-8")
+                    else:
+                        self._send_json({"ok": False, "error": "locked"}, 401)
+                    return
                 index = STATIC_DIR / "index.html"
                 if index.exists():
                     self._send_file(index, "text/html; charset=utf-8")
@@ -664,6 +750,12 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
 
             if parsed.path == "/api/health":
                 self._send_json({"ok": True, "service": "deskaudit-dashboard"})
+                return
+
+            # Every data API needs an unlocked session while the lock
+            # is on — otherwise the data would leak past the lock page.
+            if lock is not None and not lock.is_unlocked(_parse_cookies(self.headers)):
+                self._send_json({"ok": False, "error": "locked"}, 401)
                 return
 
             if parsed.path == "/api/summary":
@@ -789,6 +881,42 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
 
         def _do_POST(self):
             parsed = urlparse(self.path)
+            if parsed.path == "/api/unlock":
+                # The way in: {"code": "1122"} -> session cookie.
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                try:
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                except (ValueError, OSError):
+                    self._send_json({"ok": False, "error": "invalid JSON body"}, 400)
+                    return
+                if lock is None:
+                    self._send_json({"ok": True})
+                    return
+                ok, token_or_reason = lock.unlock(str(body.get("code") or ""))
+                if ok:
+                    cookie = (f"{SESSION_COOKIE}={token_or_reason}; HttpOnly; "
+                              f"Path=/; Max-Age={SESSION_SECONDS}; SameSite=Lax")
+                    self._send_json({"ok": True},
+                                    extra_headers={"Set-Cookie": cookie})
+                elif token_or_reason == "locked_out":
+                    self._send_json({"ok": False, "error":
+                        "অনেকবার ভুল কোড দেওয়া হয়েছে — ৩০ সেকেন্ড পরে আবার চেষ্টা করুন।"}, 429)
+                else:
+                    self._send_json({"ok": False, "error": "ভুল কোড — আবার চেষ্টা করুন।"}, 401)
+                return
+            if parsed.path == "/api/lock":
+                # Lock again now: drop the session and expire the cookie.
+                if lock is not None:
+                    lock.lock(_parse_cookies(self.headers))
+                self._send_json({"ok": True}, extra_headers={
+                    "Set-Cookie": f"{SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"})
+                return
+            if lock is not None and not lock.is_unlocked(_parse_cookies(self.headers)):
+                self._send_json({"ok": False, "error": "locked"}, 401)
+                return
             if parsed.path in ("/api/telegram-test", "/api/email-test"):
                 if config_path is None:
                     self._send_json({"ok": False, "error": "settings unavailable"}, 500)
@@ -865,7 +993,9 @@ class DashboardServer:
                  tagger=None, project_root: Path | None = None,
                  alerts_settings: dict | None = None,
                  config_path: Path | None = None,
-                 transfers_settings: dict | None = None):
+                 transfers_settings: dict | None = None,
+                 lock_code: str | None = "1122",
+                 lock_enabled: bool = True):
         self.db_path = Path(db_path)
         self.host = host
         self.port = port
@@ -874,6 +1004,7 @@ class DashboardServer:
         self.transfers_settings = transfers_settings or {}
         self.project_root = Path(project_root) if project_root else Path(".")
         self.config_path = Path(config_path) if config_path else None
+        self.lock = DashboardLock(lock_code, lock_enabled)
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -885,7 +1016,8 @@ class DashboardServer:
         handler = make_handler(self.db_path, self.tagger, self.project_root,
                                alerts_settings=self.alerts_settings,
                                config_path=self.config_path,
-                               transfers_settings=self.transfers_settings)
+                               transfers_settings=self.transfers_settings,
+                               lock=self.lock)
         self.server = ThreadingHTTPServer((self.host, self.port), handler)
         self.port = self.server.server_address[1]  # 0 -> real port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

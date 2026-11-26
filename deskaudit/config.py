@@ -92,6 +92,7 @@ class Config:
     backup_on_start: bool = True
     llm: dict = field(default_factory=dict)
     dashboard_on_start: bool = True
+    dashboard_lock: bool = True
     secret_gate: dict = field(default_factory=dict)
     transfers: dict = field(default_factory=dict)
     telegram: dict = field(default_factory=dict)
@@ -188,6 +189,7 @@ class Config:
             backup_on_start=bool(merged.get("backup_on_start", True)),
             llm=dict(merged.get("llm", {}) or {}),
             dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
+            dashboard_lock=bool(merged.get("dashboard_lock", True)),
             secret_gate={**DEFAULT_SECRET_GATE, **(merged.get("secret_gate", {}) or {})},
             transfers=transfers,
             telegram=telegram,

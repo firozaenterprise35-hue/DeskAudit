@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskAudit — লক করা আছে</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #ffffff; color: #222;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  .lock { text-align: center; padding: 24px; max-width: 360px; width: 100%; }
+  .lock h1 { font-size: 22px; margin: 0 0 8px; font-weight: 600; }
+  .lock p { margin: 0 0 20px; color: #666; font-size: 15px; }
+  #pin { width: 100%; font-size: 22px; letter-spacing: 10px; text-align: center;
+    padding: 12px; border: 2px solid #ccc; border-radius: 8px; outline: none; }
+  #pin:focus { border-color: #2563eb; }
+  button { width: 100%; margin-top: 12px; font-size: 16px; padding: 12px;
+    border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  #msg { min-height: 22px; margin-top: 12px; color: #c00; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="lock">
+  <h1>🔒 DeskAudit</h1>
+  <p>ড্যাশবোর্ড লক করা আছে। কোড লিখে Enter চাপুন।</p>
+  <form id="unlockForm" autocomplete="off">
+    <input id="pin" type="password" inputmode="numeric" placeholder="••••" autofocus>
+    <button type="submit">খুলুন</button>
+  </form>
+  <div id="msg"></div>
+</div>
+<script>
+document.getElementById('unlockForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const pin = document.getElementById('pin');
+  const msg = document.getElementById('msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch('/api/unlock', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({code: pin.value})});
+    const data = await r.json();
+    if (r.ok && data.ok) { location.reload(); return; }
+    msg.textContent = (data && data.error) || 'ভুল কোড — আবার চেষ্টা করুন।';
+    pin.value = ''; pin.focus();
+  } catch (err) {
+    msg.textContent = 'সার্ভারের সাথে যোগাযোগ হয়নি — এজেন্ট চালু আছে কি না দেখুন।';
+  }
+});
+</script>
+</body>
+</html>

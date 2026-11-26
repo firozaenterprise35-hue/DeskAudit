@@ -175,7 +175,7 @@ def test_dashboard_js_e2e():
                               Project(name="Study", daily_goal_minutes=120)])
     server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
                              tagger=tagger, project_root=tmp,
-                             config_path=tmp / "config.yaml")
+                             config_path=tmp / "config.yaml", lock_enabled=False)
     url = server.start()
     try:
         harness = tmp / "harness.js"

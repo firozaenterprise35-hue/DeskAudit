@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -357,6 +357,26 @@ silent.
   (the title can show e.g. "WhatsApp — Rina"), never the words typed
   there. To see what is on screen right now, the owner can use
   /screenshot on demand (v12.3, only to her chat).
+
+**Dashboard PIN lock (v12.6)** — the owner asked that the dashboard
+stay white/blank until she types 1122 and presses Enter.
+- Opening http://127.0.0.1:8000/ now shows a plain **white lock
+  page** (PIN field + "খুলুন" button). Typing the code (the
+  secret-gate code, default 1122) and pressing Enter unlocks the
+  dashboard for 8 hours.
+- The lock protects the **data, not just the page**: every data API
+  (/api/summary, /api/range, /api/alerts, /api/transfers,
+  /api/narrative, /api/weekly, /api/export, /api/settings,
+  /api/telegram-test, /api/email-test) answers 401 while locked.
+  /api/health stays open (liveness only).
+- Unlocking mints a random session token (HttpOnly cookie, never the
+  code itself); sessions die when the agent restarts. A "🔒 লক করুন"
+  button in the dashboard header locks again immediately. 5 wrong
+  codes in 5 minutes lock unlocking out for 30 seconds.
+- Config: `dashboard_lock: true` (top-level, Dashboard Settings →
+  Agent → "ড্যাশবোর্ড খুলতে 1122 কোড চাইবে"); changing
+  secret_gate.code changes the dashboard PIN too, since it is the
+  same code.
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -485,6 +505,7 @@ DeskAudit/
     ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.3)
     ├── test_app_watch.py    # New-program watch + instant alerts (v12.5)
     ├── test_silent.py       # Silent child-process launches, no console flash (v12.5)
+    ├── test_dashboard_lock.py  # Dashboard PIN lock (v12.6)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -512,7 +533,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.5.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.6.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -551,17 +572,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.5-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.6-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.5.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.6.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.5.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.6.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

@@ -64,6 +64,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
   <button class="rangeBtn" data-days="14">14d</button>
   <button class="rangeBtn" data-days="30">30d</button>
   <button id="refreshBtn">Refresh</button>
+  <button id="lockBtn" title="ড্যাশবোর্ড এখনই লক করুন — আবার খুলতে 1122 লাগবে">🔒 লক করুন</button>
   <label><input type="checkbox" id="autoRefresh"> Auto-refresh 30s</label>
   <span class="sub">Export:</span>
   <a id="expMd" href="#">Markdown</a> · <a id="expCsv" href="#">Apps CSV</a> · <a id="expBrowser" href="#">Browser CSV</a> · <a id="expProjects" href="#">Projects CSV</a> · <a id="expTransfers" href="#">Transfers CSV</a>
@@ -145,6 +146,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_track_searches" type="checkbox"> Track searches</label>
       <label><input id="set_browser_receiver_enabled" type="checkbox"> Extension receiver (127.0.0.1:8765)</label>
       <label><input id="set_dashboard_on_start" type="checkbox"> Serve dashboard with the agent (127.0.0.1:8000)</label>
+      <label><input id="set_dashboard_lock" type="checkbox"> ড্যাশবোর্ড খুলতে 1122 কোড চাইবে (সাদা লক পর্দা — কোডটা সিক্রেট গেটের কোডই)</label>
     </div>
     <h3>সিক্রেট গেট (Secret gate)</h3>
     <p class="muted">ডেস্কটপে পরপর কয়েকবার ক্লিক করে কোড টাইপ করলেই ড্যাশবোর্ড খুলবে — কোনো উইন্ডো খোলা রাখতে হয় না।</p>
@@ -243,6 +245,7 @@ async function load(){
     fetch(`/api/narrative?date=${d}`).then(x=>x.json()).catch(()=>null),
     fetch(`/api/weekly?end=${d}&days=7`).then(x=>x.json()).catch(()=>null),
   ]);
+  if(s && s.error==='locked'){ location.reload(); return; }
   if(!s){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি — এজেন্ট চালু আছে কি না দেখুন।'); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি। এজেন্ট (DeskAudit) চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
   if(s.error){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি: '+s.error); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি: '+esc(s.error)+' — এজেন্ট চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
   state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); renderTransfers(s.transfers); setStatus('Updated '+new Date().toLocaleTimeString());
@@ -367,6 +370,7 @@ async function loadSettings(){
   setChk('set_track_searches',s.agent.track_searches);
   setChk('set_browser_receiver_enabled',s.agent.browser_receiver_enabled);
   setChk('set_dashboard_on_start',s.agent.dashboard_on_start);
+  setChk('set_dashboard_lock',s.agent.dashboard_lock);
   if(s.secret_gate){ setChk('set_gate_enabled',s.secret_gate.enabled); setNum('set_gate_clicks',s.secret_gate.clicks); $('set_gate_code').value=s.secret_gate.code||''; }
   setNum('set_distracting_minutes',s.alerts.distracting_minutes);
   setNum('set_untagged_minutes',s.alerts.untagged_minutes);
@@ -450,6 +454,7 @@ async function saveSettings(){
   updates.agent.track_searches=$('set_track_searches').checked;
   updates.agent.browser_receiver_enabled=$('set_browser_receiver_enabled').checked;
   updates.agent.dashboard_on_start=$('set_dashboard_on_start').checked;
+  updates.agent.dashboard_lock=$('set_dashboard_lock').checked;
   updates.secret_gate={enabled:$('set_gate_enabled').checked};
   const clicks=parseInt($('set_gate_clicks').value,10); if(Number.isFinite(clicks)) updates.secret_gate.clicks=clicks;
   const code=$('set_gate_code').value.trim(); if(code) updates.secret_gate.code=code;
@@ -500,6 +505,7 @@ async function testEmail(){
 $('saveSettingsBtn').onclick=saveSettings;
 $('testTelegramBtn').onclick=testTelegram;
 $('testEmailBtn').onclick=testEmail;
+$('lockBtn').onclick=async()=>{ try{ await fetch('/api/lock',{method:'POST'}); }catch(e){} location.reload(); };
 load();
 loadSettings();
 </script>

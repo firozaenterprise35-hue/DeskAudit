@@ -272,7 +272,9 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 config.db_path, host="127.0.0.1", port=8000, tagger=tagger,
                 project_root=config.project_root, alerts_settings=config.alerts,
                 config_path=config.project_root / "config.yaml",
-                transfers_settings=config.transfers)
+                transfers_settings=config.transfers,
+                lock_code=str((config.secret_gate or {}).get("code", "1122")),
+                lock_enabled=bool(config.dashboard_lock))
             url = dashboard_server.start()
             log.info("Dashboard serving at %s", url)
         except OSError as exc:
@@ -654,7 +656,9 @@ def main(argv: list[str] | None = None) -> int:
                                      tagger=tagger, project_root=config.project_root,
                                      alerts_settings=config.alerts,
                                      config_path=Path(config_path),
-                                     transfers_settings=config.transfers)
+                                     transfers_settings=config.transfers,
+                                     lock_code=str((config.secret_gate or {}).get("code", "1122")),
+                                     lock_enabled=bool(config.dashboard_lock))
             url = server.start()
             print(f"DeskAudit dashboard: {url}")
         except OSError:
@@ -686,7 +690,9 @@ def main(argv: list[str] | None = None) -> int:
                                  tagger=tagger, project_root=config.project_root,
                                  alerts_settings=config.alerts,
                                  config_path=Path(config_path),
-                                 transfers_settings=config.transfers)
+                                 transfers_settings=config.transfers,
+                                 lock_code=str((config.secret_gate or {}).get("code", "1122")),
+                                 lock_enabled=bool(config.dashboard_lock))
         try:
             url = server.start()
         except OSError:

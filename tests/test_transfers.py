@@ -227,7 +227,7 @@ def test_dashboard_transfers_api():
     assert s["cloud_domains"] == ["drive.google.com"]
     db.close()
     server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
-                             project_root=tmp)
+                             project_root=tmp, lock_enabled=False)
     url = server.start()
     try:
         with urllib.request.urlopen(url + f"api/transfers?date={date}", timeout=5) as r:

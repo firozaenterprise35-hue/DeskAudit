@@ -101,6 +101,12 @@ backup_on_start: true
 # runs, so the secret gate can open it any time (no separate --dashboard).
 dashboard_on_start: true
 
+# Dashboard lock (v12.6): the dashboard shows a plain white lock page
+# until the owner types the secret-gate code above (1122) and presses
+# Enter. The code is the same one — change it in secret_gate.code and
+# both change together. Set false to open the dashboard without a code.
+dashboard_lock: true
+
 # Secret gate: click N times on the desktop, then type the code on the
 # keyboard — the dashboard opens in the browser. Nothing is logged.
 # Change the code from the dashboard Settings page, or here.

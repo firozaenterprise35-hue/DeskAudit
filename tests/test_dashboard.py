@@ -110,7 +110,7 @@ def test_dashboard_http():
     tagger = Tagger(projects=[Project(name="Office", daily_goal_minutes=240),
                               Project(name="Study", daily_goal_minutes=120)])
     server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
-                             tagger=tagger, project_root=tmp)
+                             tagger=tagger, project_root=tmp, lock_enabled=False)
     url = server.start()
     try:
         with urllib.request.urlopen(url + "api/health", timeout=5) as r:
@@ -215,7 +215,7 @@ def test_dashboard_settings_http():
     tagger = Tagger(projects=[Project(name="Office", daily_goal_minutes=240)])
     server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
                              tagger=tagger, project_root=tmp,
-                             config_path=tmp / "config.yaml")
+                             config_path=tmp / "config.yaml", lock_enabled=False)
     url = server.start()
     try:
         with urllib.request.urlopen(url + "api/settings", timeout=5) as r:
