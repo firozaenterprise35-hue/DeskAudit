@@ -2,13 +2,17 @@
 ; Build the exe first (build_exe.bat on Windows, or the Wine build),
 ; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
 ;   makensis installer\DeskAudit.nsi
-; Output: installer\Output\DeskAudit-Setup-12.6.1.exe
+; Output: installer\Output\DeskAudit-Setup-12.7.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "12.6.1"
+!define APP_VERSION "12.7"
+; Numeric quad for the PE version resource (VIProductVersion needs
+; exactly X.X.X.X — APP_VERSION alternates between 2 and 3 parts,
+; so keep the quad separate and update it with the version).
+!define APP_VERSION_NUM "12.7.0.0"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
@@ -26,13 +30,13 @@ InstallDir "$LOCALAPPDATA\${APP_NAME}"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-VIProductVersion "${APP_VERSION}.0"
+VIProductVersion "${APP_VERSION_NUM}"
 VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey "CompanyName" "${APP_PUBLISHER}"
 VIAddVersionKey "FileDescription" "${APP_NAME} installer"
 VIAddVersionKey "LegalCopyright" "${APP_PUBLISHER}"
-VIAddVersionKey "FileVersion" "${APP_VERSION}.0"
+VIAddVersionKey "FileVersion" "${APP_VERSION_NUM}"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME

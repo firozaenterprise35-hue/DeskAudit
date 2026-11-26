@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -360,17 +360,20 @@ silent.
 
 **Dashboard PIN lock (v12.6)** — the owner asked that the dashboard
 stay white/blank until she types 1122 and presses Enter.
-- Opening http://127.0.0.1:8000/ now shows a plain **white lock
-  page** (PIN field + "খুলুন" button). Typing the code (the
-  secret-gate code, default 1122) and pressing Enter unlocks the
-  dashboard for 8 hours.
+- Opening http://127.0.0.1:8000/ now shows a plain **white page —
+  nothing on it at all** (v12.7: no field, no button, no text, no
+  login). The owner just types the code on the keyboard (the
+  secret-gate code, default 1122) and presses Enter, and the
+  dashboard appears at once. A wrong code clears silently and the
+  page stays white; digits older than 10s drop out.
 - The lock protects the **data, not just the page**: every data API
   (/api/summary, /api/range, /api/alerts, /api/transfers,
   /api/narrative, /api/weekly, /api/export, /api/settings,
   /api/telegram-test, /api/email-test) answers 401 while locked.
   /api/health stays open (liveness only).
 - Unlocking mints a random session token (HttpOnly cookie, never the
-  code itself); sessions die when the agent restarts. A "🔒 লক করুন"
+  code itself) and unlocks the dashboard for 8 hours; sessions die
+  when the agent restarts. A "🔒 লক করুন"
   button in the dashboard header locks again immediately. 5 wrong
   codes in 5 minutes lock unlocking out for 30 seconds.
 - Config: `dashboard_lock: true` (top-level, Dashboard Settings →
@@ -543,7 +546,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.6.1.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.7.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -582,17 +585,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.6.1-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.7-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.6.1.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.7.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.6.1.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.7.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
