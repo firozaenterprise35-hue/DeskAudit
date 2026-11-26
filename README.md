@@ -378,6 +378,16 @@ stay white/blank until she types 1122 and presses Enter.
   secret_gate.code changes the dashboard PIN too, since it is the
   same code.
 
+**Installer fix (v12.6.1)** — upgrading while the old agent was
+still running failed with "Error opening file for writing:
+...DeskAudit.exe", because the installer's one stop attempt in
+.onInit could miss an agent that started afterwards. The installer
+now stops the agent again right before copying files and *verifies*
+the exe is really free (up to 3 tries); if it is still locked it
+asks to stop DeskAudit first and Retry, instead of failing mid-way.
+The uninstaller got the same check. No code change in the agent
+itself — only the installer script and the version number.
+
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
@@ -533,7 +543,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.6.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.6.1.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -572,17 +582,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.6-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.6.1-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.6.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.6.1.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.6.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.6.1.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
