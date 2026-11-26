@@ -290,6 +290,8 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("transfers", "large_transfer_mb"): (1, 100000),
     ("telegram", "poll_seconds"): (10, 600),
     ("telegram", "digest_minutes"): (0, 1440),  # 0 = digest off
+    ("app_watch", "cooldown_minutes"): (1, 1440),
+    ("app_watch", "max_per_tick"): (1, 20),
     ("email", "smtp_port"): (1, 65535),
     ("email", "interval_minutes"): (5, 1440),
 }
@@ -309,6 +311,8 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("transfers", "sensitive_copy_alert"),
     ("telegram", "enabled"),
     ("telegram", "notify_critical"),
+    ("app_watch", "enabled"),
+    ("app_watch", "notify_new_app"),
     ("email", "enabled"),
     ("email", "use_tls"),
 }
@@ -367,6 +371,9 @@ def get_settings(config_path: str | Path) -> dict:
 
     telegram = {**DEFAULT_TELEGRAM, **(cfg.telegram or {})}
     email = {**DEFAULT_EMAIL, **(cfg.email or {})}
+    from .app_watch import DEFAULT_APP_WATCH
+
+    app_watch = {**DEFAULT_APP_WATCH, **(cfg.app_watch or {})}
     local_telegram = local.get("telegram") if isinstance(local.get("telegram"), dict) else {}
     local_email = local.get("email") if isinstance(local.get("email"), dict) else {}
     return {
@@ -431,6 +438,12 @@ def get_settings(config_path: str | Path) -> dict:
             "poll_seconds": int(telegram.get("poll_seconds", 30)),
             "digest_minutes": int(telegram.get("digest_minutes", 60)),
             "notify_critical": bool(telegram.get("notify_critical", True)),
+        },
+        "app_watch": {
+            "enabled": bool(app_watch.get("enabled", True)),
+            "notify_new_app": bool(app_watch.get("notify_new_app", True)),
+            "cooldown_minutes": int(app_watch.get("cooldown_minutes", 10)),
+            "max_per_tick": int(app_watch.get("max_per_tick", 5)),
         },
         "email": {
             "enabled": bool(email.get("enabled", False)),
@@ -562,11 +575,11 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     if not new_local:
         return get_settings(cfg_path)
     # File layout differs from the API grouping: llm/alerts/secret_gate/
-    # transfers/telegram/email are nested dicts in the yaml, but
+    # transfers/telegram/email/app_watch are nested dicts in the yaml, but
     # agent/backup keys live at the top level (poll_interval_seconds, ...).
     local = _read_local_raw(cfg_path)
     for section, values in new_local.items():
-        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email"):
+        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email", "app_watch"):
             current = local.get(section)
             if not isinstance(current, dict):
                 current = {}

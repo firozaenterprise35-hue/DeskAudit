@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -269,7 +269,7 @@ shared report summary, so Telegram and the dashboard can never drift):
   When the day has no recorded work yet, /status says so plainly and
   reminds you to check that the agent is running.
 
-**Remote control (v12.4)** — the same bot also controls the agent.
+**Remote control (v12.2)** — the same bot also controls the agent.
 Only the owner's chat id may use these; others are ignored. The agent
 must be running on the PC (it polls Telegram every ~30 s).
 - Read-only: **/week** (7-day summary), **/apps**, **/projects**,
@@ -292,7 +292,7 @@ must be running on the PC (it polls Telegram every ~30 s).
   first and only run after you reply হ্যাঁ/yes or tap ✅ (the
   confirmation expires after 5 minutes; reply না to cancel).
 
-**Screenshots, browser control, screen blank, power (v12.4)** — the
+**Screenshots, browser control, screen blank, power (v12.3)** — the
 admin controls. You are the admin/controller of your company's PCs,
 so these run from your Telegram chat only.
 - **/screenshot** (or /shot): captures the PC's whole screen right
@@ -332,6 +332,31 @@ were found by reading the code:
   token (old buttons are refused), a new command or menu tap drops
   a stale pending, and only an explicit yes ("হ্যাঁ"/"yes"/"confirm")
   confirms.
+
+**New-program alerts + silent launches (v12.5)** — the owner asked
+for an instant Telegram message whenever a new program is opened,
+and for the PowerShell window that flashed every so often to stay
+silent.
+- **Instant new-program alerts**: the agent snapshots the running
+  processes once at startup; any program opened after that triggers
+  an immediate Telegram message — which program, its exe path, its
+  open window title, when it opened, and its project tag. System
+  and background processes never alert, the same program is not
+  re-reported within `cooldown_minutes` (default 10), and at most
+  `max_per_tick` messages go out per tick. Config in `app_watch:`
+  and Dashboard Settings → নতুন প্রোগ্রাম অ্যালার্ট.
+- **Silent launches**: every child process DeskAudit starts
+  (PowerShell alert toasts, ipconfig /flushdns, shutdown, tasklist /
+  taskkill, schtasks) now runs through `utils.run_hidden()` —
+  CREATE_NO_WINDOW + a hidden STARTUPINFO — so no console window
+  ever flashes. The toast also gets `-WindowStyle Hidden`.
+- **What is NOT recorded — a deliberate boundary**: DeskAudit never
+  logs keystrokes and never records what anyone types or writes —
+  no message or email text, no passwords, no clipboard. The
+  new-program alert says WHICH program and WHICH window/chat is open
+  (the title can show e.g. "WhatsApp — Rina"), never the words typed
+  there. To see what is on screen right now, the owner can use
+  /screenshot on demand (v12.3, only to her chat).
 
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
@@ -420,6 +445,7 @@ DeskAudit/
 │   ├── secret_gate.py       # 4 desktop clicks + code opens the dashboard
 │   ├── transfers.py         # Data Transfer Monitor: USB / cloud / email / print / sensitive folders
 │   ├── telegram.py          # Telegram bot: status / digest / critical alerts, /status /today commands
+│   ├── app_watch.py         # Real-time new-program watch: baseline + new process alerts (v12.5)
 │   ├── screenshot.py        # Screen capture (ctypes BitBlt + stdlib PNG encoder, Windows only)
 │   ├── screen_blank.py      # Fullscreen white/black overlay window (Windows only)
 │   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
@@ -455,8 +481,10 @@ DeskAudit/
     ├── test_audit_v11_1.py  # v11.1 re-audit regression tests (19 tests)
     ├── test_telegram.py     # Telegram bot + hourly email tests (mocked network)
     ├── test_telegram_commands.py  # Telegram remote control tests (v12.2, mocked network)
-    ├── test_telegram_control.py   # Screenshot/browser/screen/power commands (v12.4)
-    ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.4)
+    ├── test_telegram_control.py   # Screenshot/browser/screen/power commands (v12.3)
+    ├── test_screenshot.py   # PNG encoder + screen overlay + hosts block tests (v12.3)
+    ├── test_app_watch.py    # New-program watch + instant alerts (v12.5)
+    ├── test_silent.py       # Silent child-process launches, no console flash (v12.5)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -484,7 +512,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.4.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.5.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -523,17 +551,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.4-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.5-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.4.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.5.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.4.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.5.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

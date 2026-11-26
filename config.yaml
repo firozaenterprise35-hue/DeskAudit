@@ -170,6 +170,18 @@ telegram:
   digest_minutes: 60      # scheduled digest cadence (minutes)
   notify_critical: true   # send critical alerts to Telegram immediately
 
+# --- New-program watch ------------------------------------------------
+# Whenever a program is opened AFTER the agent starts, Telegram gets an
+# instant message: which program, its exe path, its open window title,
+# when it opened, and its project tag. Metadata only — never what anyone
+# types or writes inside the program. System/background processes never
+# alert; the same program is not re-reported within cooldown_minutes.
+app_watch:
+  enabled: true
+  notify_new_app: true
+  cooldown_minutes: 10
+  max_per_tick: 5
+
 # --- Hourly email digest ----------------------------------------------
 # One digest email every interval_minutes to your own address (SMTP).
 # Gmail route: 2-Step Verification on, then an App Password for

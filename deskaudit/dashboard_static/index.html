@@ -190,6 +190,14 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_telegram_notify_critical" type="checkbox"> Critical অ্যালার্ট সাথে সাথে পাঠান</label>
     </div>
     <button id="testTelegramBtn" type="button">📩 Telegram পরীক্ষা বার্তা পাঠান</button><span id="telegramTestStatus"></span>
+    <h3>নতুন প্রোগ্রাম অ্যালার্ট (New-program alerts)</h3>
+    <p class="note">এজেন্ট চালু হওয়ার পর কেউ কোনো নতুন প্রোগ্রাম খুললেই Telegram-এ সাথে সাথে মেসেজ যাবে — কোন প্রোগ্রাম, কোথায় আছে, কোন উইন্ডো খোলা, কখন খুলেছে, কোন প্রজেক্ট। মেটাডেটা মাত্র — ভেতরে কী টাইপ হচ্ছে তা কখনো আসে না।</p>
+    <div class="settings-grid">
+      <label><input id="set_appwatch_enabled" type="checkbox"> নতুন প্রোগ্রাম নজরদারি চালু</label>
+      <label><input id="set_appwatch_notify_new_app" type="checkbox"> খোলার সাথে সাথে Telegram-এ জানান</label>
+      <label><span>একই প্রোগ্রাম আবার জানানোর আগে বিরতি (মিনিট, 1–1440)</span><input id="set_appwatch_cooldown_minutes" type="number" min="1" max="1440"></label>
+      <label><span>একবারে সর্বোচ্চ কয়টি মেসেজ (1–20)</span><input id="set_appwatch_max_per_tick" type="number" min="1" max="20"></label>
+    </div>
     <h3>ঘণ্টার ইমেইল (Hourly email)</h3>
     <p class="muted">প্রতি ঘণ্টায় একবার আপডেট ইমেইল যাবে — ব্যবহৃত অ্যাপ, ফাইল কাজ, ডেটা ট্রান্সফার, অ্যালার্ট। Gmail-এর জন্য 2-Step Verification চালু করে App Password বানান (Google Account → Security → App passwords), সেই ১৬ অক্ষরের পাসওয়ার্ড এখানে বসান। পাসওয়ার্ড দেখানো হয় না।</p>
     <div class="setgrid">
@@ -393,6 +401,12 @@ async function loadSettings(){
     setNum('set_telegram_digest_minutes',s.telegram.digest_minutes);
     setChk('set_telegram_notify_critical',s.telegram.notify_critical);
   }
+  if(s.app_watch){
+    setChk('set_appwatch_enabled',s.app_watch.enabled);
+    setChk('set_appwatch_notify_new_app',s.app_watch.notify_new_app);
+    setNum('set_appwatch_cooldown_minutes',s.app_watch.cooldown_minutes);
+    setNum('set_appwatch_max_per_tick',s.app_watch.max_per_tick);
+  }
   if(s.email){
     setChk('set_email_enabled',s.email.enabled);
     $('set_email_smtp_host').value=s.email.smtp_host||'';
@@ -449,6 +463,9 @@ async function saveSettings(){
   const chatId=$('set_telegram_chat_id').value.trim(); if(chatId) updates.telegram.chat_id=chatId;
   const tgInts={poll_seconds:'set_telegram_poll_seconds',digest_minutes:'set_telegram_digest_minutes'};
   for(const [k,id] of Object.entries(tgInts)){const v=num(id); if(v!==null) updates.telegram[k]=v}
+  updates.app_watch={enabled:$('set_appwatch_enabled').checked,notify_new_app:$('set_appwatch_notify_new_app').checked};
+  const awInts={cooldown_minutes:'set_appwatch_cooldown_minutes',max_per_tick:'set_appwatch_max_per_tick'};
+  for(const [k,id] of Object.entries(awInts)){const v=num(id); if(v!==null) updates.app_watch[k]=v}
   updates.email={enabled:$('set_email_enabled').checked,use_tls:$('set_email_use_tls').checked};
   const pw=$('set_email_smtp_password').value.trim();
   if($('set_email_clear_password').checked) updates.email.smtp_password='';

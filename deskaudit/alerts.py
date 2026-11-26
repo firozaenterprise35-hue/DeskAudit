@@ -40,7 +40,6 @@ so re-running never duplicates them. Only NEW alerts are notified.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -406,8 +405,15 @@ def notify_windows(alerts: list[Alert]) -> bool:
         ".Show([Windows.UI.Notifications.ToastNotification]::new($xml))"
     )
     try:
-        result = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                capture_output=True, timeout=15, check=False)
+        from .utils import run_hidden
+
+        # -WindowStyle Hidden + CREATE_NO_WINDOW (run_hidden): the toast
+        # used to flash a PowerShell console window every time an alert
+        # fired (v12.5 audit — Firoza's "every so often a PowerShell
+        # screen opens"). Now it never shows.
+        result = run_hidden(["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+                             "-Command", ps],
+                            capture_output=True, timeout=15, check=False)
         return result.returncode == 0
     except Exception:
         return False

@@ -219,6 +219,19 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         except Exception as exc:  # transfers must never crash the agent
             log.warning("Data Transfer Monitor did not start: %s", exc)
 
+    # New-program watch (v12.5): snapshot the processes running NOW, so
+    # only programs opened AFTER the agent starts are reported.
+    app_watch = None
+    if (config.app_watch or {}).get("enabled", True):
+        try:
+            from deskaudit.app_watch import AppWatch
+
+            app_watch = AppWatch(config.app_watch, log)
+            log.info("New-program watch on: baseline %s processes.",
+                     app_watch.baseline())
+        except Exception as exc:  # the watch must never crash the agent
+            log.warning("New-program watch did not start: %s", exc)
+
     # Telegram bot: outbound status/digests + critical alerts to the
     # owner's chat. Disabled until bot_token + chat_id are set.
     if (config.telegram or {}).get("enabled", False):
@@ -368,6 +381,19 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                         telegram_bot.poll_commands()
                     except Exception as exc:
                         log.warning("Telegram poll failed: %s", exc)
+                # New programs opened since the last tick go to Telegram
+                # immediately (v12.5) — which program, its window, when.
+                if (app_watch is not None and app_watch.enabled
+                        and telegram_bot.configured):
+                    try:
+                        new_apps = app_watch.check()
+                        if new_apps:
+                            sent = telegram_bot.notify_new_app(new_apps)
+                            if sent:
+                                log.info("New program alert sent: %s",
+                                         ", ".join(a["name"] for a in new_apps[:sent]))
+                    except Exception as exc:
+                        log.warning("New-program alert failed: %s", exc)
                 try:
                     digest_minutes = int(telegram_bot.settings.get("digest_minutes", 60) or 60)
                 except (TypeError, ValueError):
@@ -488,13 +514,13 @@ def _stop_running_agent() -> int:
     if sys.platform != "win32":
         print("--stop works on Windows only (this is not a Windows machine).")
         return 1
-    import subprocess
+    from deskaudit.utils import run_hidden
 
     mine = os.getpid()
     stopped = 0
     try:
-        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, timeout=30)
+        out = run_hidden(["tasklist", "/FO", "CSV", "/NH"],
+                         capture_output=True, text=True, timeout=30)
         for line in out.stdout.splitlines():
             parts = [p.strip().strip('"') for p in line.split('","')]
             if len(parts) >= 2 and parts[0].lower() == "deskaudit.exe":
@@ -503,11 +529,11 @@ def _stop_running_agent() -> int:
                 except ValueError:
                     continue
                 if pid != mine:
-                    r = subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                       capture_output=True, timeout=30)
+                    r = run_hidden(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=30)
                     if r.returncode == 0:
                         stopped += 1
-    except (OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
         print(f"Could not stop DeskAudit: {exc}")
         return 1
     if stopped:
@@ -557,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Show the fullscreen white/black overlay for --screen-seconds (test only)")
     parser.add_argument("--screen-seconds", type=int, default=5,
                         help="Seconds for --screen-test (default 5)")
+    parser.add_argument("--app-watch-test", action="store_true",
+                        help="List currently running non-system programs with window titles (test only)")
     parser.add_argument("--email-test", action="store_true",
                         help="Send a test email to the configured address")
     parser.add_argument("--email-now", action="store_true",
@@ -741,16 +769,16 @@ def main(argv: list[str] | None = None) -> int:
             print("This creates a Windows Task Scheduler task. On Windows, double-click")
             print("schedule_summary.bat, or run: python main.py --schedule-summary")
             return 0
-        import subprocess
+        from deskaudit.utils import run_hidden
 
         if getattr(sys, "frozen", False):
             cmd = f'"{sys.executable}" --evening-job'
         else:
             cmd = (f'"{sys.executable}" "{Path(config.project_root) / "main.py"}" '
                    f"--evening-job")
-        r = subprocess.run(["schtasks", "/create", "/tn", "DeskAudit Daily Summary",
-                            "/tr", cmd, "/sc", "daily", "/st", "21:00", "/f"],
-                           capture_output=True, text=True)
+        r = run_hidden(["schtasks", "/create", "/tn", "DeskAudit Daily Summary",
+                        "/tr", cmd, "/sc", "daily", "/st", "21:00", "/f"],
+                       capture_output=True, text=True)
         print(r.stdout or r.stderr)
         return 0 if r.returncode == 0 else 1
 
@@ -758,10 +786,10 @@ def main(argv: list[str] | None = None) -> int:
         if sys.platform != "win32":
             print("On Windows, double-click unschedule_summary.bat.")
             return 0
-        import subprocess
+        from deskaudit.utils import run_hidden
 
-        r = subprocess.run(["schtasks", "/delete", "/tn", "DeskAudit Daily Summary", "/f"],
-                           capture_output=True, text=True)
+        r = run_hidden(["schtasks", "/delete", "/tn", "DeskAudit Daily Summary", "/f"],
+                       capture_output=True, text=True)
         print(r.stdout or r.stderr)
         return 0 if r.returncode == 0 else 1
 
@@ -883,6 +911,24 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(max(1, args.screen_seconds))
         stop_blank()
         print("Screen overlay stopped.")
+        return 0
+
+    if args.app_watch_test:
+        from deskaudit.app_watch import AppWatch, _SYSTEM_PROCS, _iter_processes, window_title_for_pid
+
+        procs = _iter_processes()
+        watch = AppWatch()
+        watch.baseline(procs)
+        print(f"Running processes: {len(procs)} (baseline: {len(watch._seen)})")
+        shown = 0
+        for p in sorted(procs, key=lambda q: (q.name or "").lower()):
+            if (p.name or "").lower() in _SYSTEM_PROCS:
+                continue
+            title = window_title_for_pid(p.pid)
+            print(f"  {p.name} (pid {p.pid}){(' — ' + title[:60]) if title else ''}")
+            shown += 1
+            if shown >= 15:
+                break
         return 0
 
     if args.telegram_test or args.telegram_now:

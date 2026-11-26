@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -262,15 +263,15 @@ def unblock_domain(domain: str, hosts_file: str | Path | None = None) -> str:
 
 
 def _flush_dns() -> None:
-    """Best-effort DNS cache flush (Windows). Never raises."""
-    import subprocess
-    import sys
+    """Best-effort DNS cache flush (Windows). Never raises. Runs
+    fully hidden — no console window (v12.5)."""
+    from .utils import run_hidden
 
     if sys.platform != "win32":
         return
     try:
-        subprocess.run(["ipconfig", "/flushdns"], capture_output=True,
-                       timeout=15)
+        run_hidden(["ipconfig", "/flushdns"], capture_output=True,
+                   timeout=15)
     except Exception:
         pass
 
@@ -767,6 +768,25 @@ def build_browser_text(db, day: str) -> str:
     return "\n".join(lines)
 
 
+def build_new_app_text(info: dict, project: str = "Untagged") -> str:
+    """One newly opened program, as a Telegram message (v12.5).
+
+    Metadata only: which program, its exe path, its open window title,
+    when it opened, and its project tag. Never what anyone types or
+    writes inside it — the window title may show WHICH chat or document
+    is open (e.g. "WhatsApp — Rina"), never the words typed there.
+    """
+    lines = ["🆕 নতুন প্রোগ্রাম খুলেছে",
+             f"📌 {info.get('name') or '(?)'}"]
+    if info.get("exe"):
+        lines.append(f"📁 {info['exe']}")
+    title = (info.get("title") or "").strip()
+    lines.append(f"🪟 {title[:100]}" if title else "🪟 (এখনো কোনো উইন্ডো খোলা হয়নি)")
+    lines.append(f"🕐 খুলেছে: {info.get('started_at') or 'এইমাত্র'}")
+    lines.append(f"🎯 প্রজেক্ট: {project}")
+    return "\n".join(lines)
+
+
 def build_search_text(db, day: str, query: str) -> str:
     """Search one day's files, window titles and browser searches."""
     res = db.search_today(day, query)
@@ -1019,7 +1039,10 @@ class TelegramBot:
         if raw == "forever":
             return True
         try:
-            return datetime.fromisoformat(raw) > datetime.now()
+            until = datetime.fromisoformat(raw)
+            if until.tzinfo is not None:
+                until = until.replace(tzinfo=None)
+            return until > datetime.now()
         except Exception:
             return False
 
@@ -1453,29 +1476,27 @@ class TelegramBot:
             "restart" if restart else "shutdown", {})
 
     def _do_shutdown(self, restart: bool) -> str:
-        import subprocess
-        import sys
+        from .utils import run_hidden
 
         if sys.platform != "win32":
             return "⏻ PC বন্ধ/রিস্টার্ট শুধু Windows PC-তে চলে।"
         verb = "রিস্টার্ট" if restart else "বন্ধ"
         try:
-            subprocess.run(["shutdown", "/r" if restart else "/s", "/t", "60",
-                            "/c", f"DeskAudit: {verb} হচ্ছে"],
-                           capture_output=True, timeout=20)
+            run_hidden(["shutdown", "/r" if restart else "/s", "/t", "60",
+                        "/c", f"DeskAudit: {verb} হচ্ছে"],
+                       capture_output=True, timeout=20)
         except Exception as exc:
             return f"⏻ {verb} করা যায়নি: {exc}"
         return (f"⏻ কম্পিউটার ৬০ সেকেন্ড পরে {verb} হবে।\n"
                 f"বাতিল করতে /abort লিখুন।")
 
     def abort_shutdown(self) -> str:
-        import subprocess
-        import sys
+        from .utils import run_hidden
 
         if sys.platform != "win32":
             return "⏻ PC বন্ধ/রিস্টার্ট শুধু Windows PC-তে চলে।"
         try:
-            subprocess.run(["shutdown", "/a"], capture_output=True, timeout=20)
+            run_hidden(["shutdown", "/a"], capture_output=True, timeout=20)
         except Exception as exc:
             return f"⏻ বাতিল করা যায়নি: {exc}"
         return "⏻ বন্ধ/রিস্টার্ট বাতিল করা হয়েছে।"
@@ -1577,6 +1598,32 @@ class TelegramBot:
         text = (f"🚨 DeskAudit অ্যালার্ট [{alert.severity}]\n"
                 f"{alert.title}\n{alert.message}").strip()
         return self.send(text)
+
+    def notify_new_app(self, infos: list[dict]) -> int:
+        """Immediate Telegram notice for each newly opened program.
+
+        Metadata only: which program, its exe path, its open window
+        title, when it opened, and its project tag. Never what anyone
+        types or writes inside it. Returns how many were sent.
+        Respects /mute, like the other immediate notices.
+        """
+        if not infos or self.muted():
+            return 0
+        sent = 0
+        for info in infos:
+            project = "Untagged"
+            try:
+                if self.tagger is not None:
+                    project, _tags = self.tagger.tag_app(
+                        str(info.get("name", "")),
+                        str(info.get("exe", "")),
+                        str(info.get("title", "")))
+            except Exception:
+                project = "Untagged"
+            text = build_new_app_text(info, project)
+            if self.send(text):
+                sent += 1
+        return sent
 
     # -- command routing ---------------------------------------------------
     def handle_text(self, text: str) -> None:

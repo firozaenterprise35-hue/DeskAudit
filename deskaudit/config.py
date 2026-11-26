@@ -96,6 +96,7 @@ class Config:
     transfers: dict = field(default_factory=dict)
     telegram: dict = field(default_factory=dict)
     email: dict = field(default_factory=dict)
+    app_watch: dict = field(default_factory=dict)
     project_root: Path = Path(".")
 
     @classmethod
@@ -149,6 +150,10 @@ class Config:
 
         telegram = {**DEFAULT_TELEGRAM, **(merged.get("telegram", {}) or {})}
         email = {**DEFAULT_EMAIL, **(merged.get("email", {}) or {})}
+        # New-program watch: same pattern.
+        from .app_watch import DEFAULT_APP_WATCH
+
+        app_watch = {**DEFAULT_APP_WATCH, **(merged.get("app_watch", {}) or {})}
         return cls(
             poll_interval_seconds=_coerce_int(merged.get("poll_interval_seconds", 5), 5),
             idle_threshold_seconds=_coerce_int(merged.get("idle_threshold_seconds", 300), 300),
@@ -187,6 +192,7 @@ class Config:
             transfers=transfers,
             telegram=telegram,
             email=email,
+            app_watch=app_watch,
             project_root=root,
         )
 
