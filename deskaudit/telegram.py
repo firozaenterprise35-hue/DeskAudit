@@ -592,6 +592,12 @@ def build_status_text(db, day: str, include_open: bool = True) -> str:
         lines.append("")
         lines.append("(আজ এখনো কোনো কাজ রেকর্ড হয়নি — এজেন্ট চালু আছে কিনা "
                      "দেখুন: Start Menu → DeskAudit)")
+    # v12.14.2: the version, so a /status reply proves which build is
+    # actually running (an old agent answers with its own version).
+    from deskaudit import __version__
+
+    lines.append("")
+    lines.append(f"DeskAudit v{__version__}")
     return "\n".join(lines)
 
 
@@ -1651,12 +1657,20 @@ class TelegramBot:
         """Start a screen recording for `minutes` minutes."""
         import sys
 
-        from .screen_record import validate_minutes
+        from .screen_record import screen_locked_reason, validate_minutes
 
         try:
             minutes = validate_minutes(minutes)
         except ValueError as exc:
             self.send(str(exc))
+            return
+        # v12.14.2: check BEFORE starting. On a locked screen every
+        # frame fails, and the old flow only learned that after the
+        # whole recording ran. The check returns None off Windows, so
+        # it runs before the platform check below.
+        locked = screen_locked_reason()
+        if locked:
+            self.send(locked)
             return
         if sys.platform != "win32":
             self.send("🎥 স্ক্রিন রেকর্ড শুধু Windows PC-তে চলে।")

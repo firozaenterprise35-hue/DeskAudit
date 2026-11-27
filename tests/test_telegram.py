@@ -118,6 +118,9 @@ def test_status_text():
         assert "E: (USB)" in text and "2.4 MB" in text
         assert "প্রথম কাজ" in text
         assert "বড় ডাউনলোড" in text
+        # v12.14.2: the version, so a /status reply proves which build
+        # is actually running on that PC.
+        assert "DeskAudit v" in text
         # Metadata only: no typed content is ever in the text (there is
         # none to leak — the DB holds titles/names only).
         assert "পাসওয়ার্ড" not in text

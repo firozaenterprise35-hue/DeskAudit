@@ -657,6 +657,29 @@ def test_recording_done_reports_reason():
     print("recording done reports reason passed")
 
 
+def test_record_refuses_when_screen_locked():
+    """v12.14.2: when the screen is locked, /record must say so at
+    once instead of starting a recording that cannot capture a frame."""
+    import deskaudit.screen_record as sr
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db, _day = _seed_db(os.path.join(tmp, "t.db"))
+        bot, _root = _make_bot(tmp, db)
+        net = _Net().install()
+        old_check = sr.screen_locked_reason
+        sr.screen_locked_reason = lambda: ("🎥 স্ক্রিন এখন ধরা যাচ্ছে না — "
+                                           "লক করা থাকলে খুলে নিন।")
+        try:
+            bot.start_recording(1)
+            assert any("লক করা" in t for _, t in net.sent), net.sent
+            assert bot._recorder is None  # never started
+        finally:
+            sr.screen_locked_reason = old_check
+            net.uninstall()
+            db.close()
+    print("record refuses when screen locked passed")
+
+
 def test_confirm_token_binding():
     """v12.4 audit fix: a ✅ button must only confirm the action it
     was shown for. A stale button (wrong token, or the old bare
@@ -796,4 +819,6 @@ if __name__ == "__main__":
     test_confirm_token_binding()
     test_new_command_clears_pending()
     test_ok_does_not_confirm()
+    test_recording_done_reports_reason()
+    test_record_refuses_when_screen_locked()
     print("ALL TELEGRAM COMMAND TESTS PASSED")

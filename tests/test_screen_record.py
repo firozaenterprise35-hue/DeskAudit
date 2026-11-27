@@ -281,6 +281,18 @@ def test_recorder_encode_failure_still_reports():
     print("recorder encode failure still reports passed")
 
 
+def test_screen_locked_reason_none_on_linux():
+    # v12.14.2: the lock check is Windows-only; off Windows it must
+    # say nothing is wrong (and never raise).
+    import sys
+
+    from deskaudit.screen_record import screen_locked_reason
+
+    if sys.platform != "win32":
+        assert screen_locked_reason() is None
+    print("screen locked reason none on linux passed")
+
+
 if __name__ == "__main__":
     test_validate_minutes()
     test_frame_interval_seconds()
@@ -292,4 +304,5 @@ if __name__ == "__main__":
     test_recorder_fail_fast_reports_error()
     test_recorder_transient_failure_recovers()
     test_recorder_encode_failure_still_reports()
+    test_screen_locked_reason_none_on_linux()
     print("ALL SCREEN RECORD TESTS PASSED")

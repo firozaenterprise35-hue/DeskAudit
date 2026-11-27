@@ -81,6 +81,53 @@ def find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
 
 
+def screen_locked_reason() -> str | None:
+    """Why the screen cannot be captured right now, or None when it
+    can (or when we cannot tell). Windows only; never raises.
+
+    On a locked workstation the desktop receiving input is "Winlogon",
+    not "Default" — BitBlt from the screen then fails for every frame.
+    The recorder used to learn that only after running the whole
+    duration; checking first turns it into an instant, exact message.
+    A screensaver still runs on "Default", so it does not trip this.
+    When unsure (the check itself fails) this returns None and the
+    recording tries anyway — the fail-fast path then reports the
+    real error."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.OpenInputDesktop.argtypes = [ctypes.c_uint, ctypes.c_int,
+                                            ctypes.c_uint]
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        user32.GetUserObjectInformationW.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+            ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)]
+        user32.GetUserObjectInformationW.restype = ctypes.c_bool
+        user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+        user32.CloseDesktop.restype = ctypes.c_bool
+        hdesk = user32.OpenInputDesktop(0, 0, 0x0001)  # DESKTOP_READOBJECTS
+        if not hdesk:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            needed = ctypes.c_uint(0)
+            ok = user32.GetUserObjectInformationW(
+                hdesk, 2, ctypes.byref(buf), ctypes.sizeof(buf),
+                ctypes.byref(needed))  # UOI_NAME = 2
+            name = buf.value if ok else ""
+        finally:
+            user32.CloseDesktop(hdesk)
+        if name and name != "Default":
+            return ("🎥 স্ক্রিন এখন ধরা যাচ্ছে না — লক করা থাকলে খুলে নিন, "
+                    "তারপর আবার চেষ্টা করুন।")
+        return None
+    except Exception:
+        return None
+
+
 def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
                        quality: int = JPEG_QUALITY) -> Path:
     """Capture the whole virtual screen as one JPEG file (Windows

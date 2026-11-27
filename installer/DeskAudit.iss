@@ -1,12 +1,12 @@
 ; DeskAudit installer — Inno Setup 6 script.
 ; Build the exe first (build_exe.bat), then compile this with:
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\DeskAudit.iss
-; Output: installer\Output\DeskAudit-Setup-12.14.1.exe
+; Output: installer\Output\DeskAudit-Setup-12.14.2.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 
 #define MyAppName "DeskAudit"
-#define MyAppVersion "12.14.1"
+#define MyAppVersion "12.14.2"
 #define MyAppPublisher "Firoza"
 #define MyAppExeName "DeskAudit.exe"
 
