@@ -118,6 +118,35 @@ class EncoderParameters(ctypes.Structure):
                 ("Parameter", EncoderParameter * 1)]
 
 
+class _Point(ctypes.Structure):
+    # NOTE: Windows LONG is always 4 bytes — use c_int32, never
+    # c_long, which is 8 bytes on Linux (LP64) and would make the
+    # struct 16 bytes here but 8 on Windows (the same class of bug
+    # as the 12.14.3 token crash).
+    _fields_ = [("x", ctypes.c_int32),
+                ("y", ctypes.c_int32)]
+
+
+class _CursorInfo(ctypes.Structure):
+    """CURSORINFO (24 bytes on 64-bit): cbSize, flags (bit 0 =
+    CURSOR_SHOWING), hCursor, ptScreenPos."""
+    _fields_ = [("cbSize", ctypes.c_uint32),
+                ("flags", ctypes.c_uint32),
+                ("hCursor", ctypes.c_void_p),
+                ("ptScreenPos", _Point)]
+
+
+class _IconInfo(ctypes.Structure):
+    """ICONINFO (32 bytes on 64-bit): fIcon, hotspot x/y, the mask
+    and colour bitmaps GetIconInfo hands back — the caller must
+    DeleteObject both, or every frame leaks two bitmaps."""
+    _fields_ = [("fIcon", ctypes.c_int),
+                ("xHotspot", ctypes.c_uint32),
+                ("yHotspot", ctypes.c_uint32),
+                ("hbmMask", ctypes.c_void_p),
+                ("hbmColor", ctypes.c_void_p)]
+
+
 _NATIVE_BOUND = False
 
 
@@ -179,6 +208,25 @@ def _bind_native() -> None:
     gdiplus.GdipGetImageEncoders.restype = _I
     gdiplus.GdipDisposeImage.argtypes = [_P]
     gdiplus.GdipDisposeImage.restype = _I
+    # Cursor drawing (v12.14.5): bound defensively — the functions
+    # exist on every Windows, but a fake DLL in tests may not have
+    # them, and _draw_cursor must never fail a frame for that.
+    _cursor = getattr(user32, "GetCursorInfo", None)
+    if _cursor is not None:
+        _cursor.argtypes = [ctypes.POINTER(_CursorInfo)]
+        _cursor.restype = _I
+    _icon = getattr(user32, "GetIconInfo", None)
+    if _icon is not None:
+        _icon.argtypes = [_P, ctypes.POINTER(_IconInfo)]
+        _icon.restype = _I
+    _draw = getattr(user32, "DrawIconEx", None)
+    if _draw is not None:
+        _draw.argtypes = [_P, _I, _I, _P, _I, _I, _U, _P, _U]
+        _draw.restype = _I
+    _load = getattr(user32, "LoadCursorW", None)
+    if _load is not None:
+        _load.argtypes = [_P, _P]
+        _load.restype = _P
     _NATIVE_BOUND = True
 
 
@@ -199,10 +247,15 @@ def validate_minutes(value) -> int:
 
 
 def frame_interval_seconds(minutes: int) -> float:
-    """Seconds between frames. At least 2 s apart, and at most
-    MAX_FRAMES frames per recording, so the file stays small no
-    matter how long the recording runs."""
-    return max(2.0, minutes * 60.0 / MAX_FRAMES)
+    """Seconds between frames. Short recordings run at 5 frames a
+    second, so mouse movement looks smooth instead of a slideshow
+    (the old 2 s gap was 0.5 fps — the owner reported the video
+    was not smooth); longer ones spread the MAX_FRAMES cap over
+    the whole duration, so the file stays small no matter how long
+    the recording runs. A 1-minute recording is 300 frames, 2
+    minutes is 600; beyond that the cap takes over (3 min ≈ 0.26 s,
+    30 min ≈ 2.6 s per frame)."""
+    return max(0.2, minutes * 60.0 / MAX_FRAMES)
 
 
 def find_ffmpeg() -> str | None:
@@ -219,6 +272,60 @@ def _call(label: str, func, *args):
         return func(*args)
     except Exception as exc:
         raise RuntimeError(f"{label}: {exc}") from exc
+
+
+_CURSOR_SHOWING = 0x00000001
+_DI_NORMAL = 0x0003
+_IDC_ARROW = 32512
+
+
+def _draw_cursor(user32, gdi32, hdc_mem, x0, y0) -> None:
+    """Paint the mouse pointer onto the captured bitmap, at the
+    position GetCursorInfo reports, corrected by the cursor's
+    hotspot (so the arrow tip — not the bitmap's corner — sits
+    where the pointer is). BitBlt never copies the pointer:
+    Windows draws it as a separate hardware overlay, so a
+    recording without this shows no mouse at all — the owner
+    reported exactly that. Never raises and never fails a frame:
+    a hidden pointer, a failed call, or a missing function all
+    just mean the frame ships without a pointer."""
+    try:
+        info = _CursorInfo()
+        info.cbSize = ctypes.sizeof(_CursorInfo)
+        if not _call("GetCursorInfo", user32.GetCursorInfo,
+                     ctypes.byref(info)):
+            return
+        if not (info.flags & _CURSOR_SHOWING):
+            return
+        hcursor = info.hCursor
+        if hcursor:
+            icon = _IconInfo()
+            if _call("GetIconInfo", user32.GetIconInfo, hcursor,
+                     ctypes.byref(icon)):
+                hx, hy = icon.xHotspot, icon.yHotspot
+                # GetIconInfo hands back two bitmaps we own: free both,
+                # or every frame leaks them.
+                if icon.hbmMask:
+                    _call("DeleteObject", gdi32.DeleteObject, icon.hbmMask)
+                if icon.hbmColor:
+                    _call("DeleteObject", gdi32.DeleteObject, icon.hbmColor)
+            else:
+                hx, hy = 0, 0
+        else:
+            # Wine (and some bare desktops) report a showing cursor
+            # with no handle — fall back to the shared system arrow
+            # so the position still shows. Its hotspot is (0, 0).
+            hcursor = _call("LoadCursorW", user32.LoadCursorW, None,
+                            _IDC_ARROW)
+            if not hcursor:
+                return
+            hx, hy = 0, 0
+        _call("DrawIconEx", user32.DrawIconEx, hdc_mem,
+              info.ptScreenPos.x - x0 - hx,
+              info.ptScreenPos.y - y0 - hy,
+              hcursor, 0, 0, 0, None, _DI_NORMAL)
+    except Exception:
+        return
 
 
 def screen_locked_reason() -> str | None:
@@ -312,6 +419,10 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
         if not _call("BitBlt", gdi32.BitBlt, hdc_mem, 0, 0, w, h,
                      hdc_screen, x0, y0, SRCCOPY):
             raise RuntimeError("screen copy failed")
+        # v12.14.5: BitBlt never copies the mouse pointer (Windows
+        # draws it as a separate overlay), so paint it onto the
+        # bitmap now — otherwise a recording shows no mouse at all.
+        _draw_cursor(user32, gdi32, hdc_mem, x0, y0)
 
         inp = GdiplusStartupInput(1, None, 0, 0)
         if _call("GdiplusStartup", gdiplus.GdiplusStartup,
@@ -672,7 +783,7 @@ class ScreenRecorder:
         # into (or delete) the new run's folder.
         run_dir = self._run_dir
         try:
-            interval = max(2.0, self._duration_seconds / MAX_FRAMES)
+            interval = frame_interval_seconds(self._minutes)
             end = (self._started_at or time.time()) + self._duration_seconds
             index = 0
             while not self._stop.is_set():

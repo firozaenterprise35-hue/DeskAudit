@@ -259,7 +259,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3, dispose-before-shutdown fix in v12.14.4)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3, dispose-before-shutdown fix in v12.14.4, mouse cursor in recordings + smooth 5 fps in v12.14.5)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -678,6 +678,8 @@ startup log line, so Task Manager can be checked against it.
 
 **Dispose-before-shutdown fix (v12.14.4)** — the access violation came back after the v12.14.3 token fix, so the audit went one step deeper and found the real cause: GdiplusShutdown ran while the captured bitmaps were still alive, and the bitmaps were disposed AFTER the shutdown — disposing after shutdown dereferences freed GDI+ state and crashes on real Windows (Wine tolerates it, which is why no test here ever saw it). Bitmaps are now disposed before the shutdown, every native call is wrapped so a future failure names the exact call (e.g. 'GdipSaveImageToFile: access violation...'), and the agent log now keeps the full traceback. A fake-DLL test locks the dispose-before-shutdown order in place.
 
+**Mouse cursor + smooth video (v12.14.5)** — recording worked but the video showed no mouse and was not smooth. Two causes, both in the recorder: (1) BitBlt never copies the mouse pointer — Windows draws it as a separate hardware overlay — so every frame now paints the pointer with GetCursorInfo + DrawIconEx, corrected by the cursor's hotspot so the arrow tip sits where the pointer is (and a hidden pointer, or a failed call, never loses a frame); (2) frames were 2 s apart (0.5 fps, a slideshow) — short recordings now run at 5 fps, with the 700-frame cap spreading longer ones out as before (1 min = 300 frames, 2 min = 600, 30 min ≈ 2.6 s per frame). A fake-DLL test locks the cursor drawing and hotspot math in place; the cursor structs are size-tested too (the first version of the POINT struct used c_long, which is 8 bytes on Linux but 4 on Windows — caught by the test before delivery).
+
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
 problems, and finished the explorer in every direction:
@@ -892,7 +894,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.14.4.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.14.5.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -934,7 +936,7 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.14.4-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.14.5-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**

@@ -49,7 +49,11 @@ def test_validate_minutes():
 
 
 def test_frame_interval_seconds():
-    assert frame_interval_seconds(1) == 2.0
+    # v12.14.5: short recordings run at 5 fps (0.2 s); the
+    # 700-frame cap takes over beyond 2 minutes.
+    assert frame_interval_seconds(1) == 0.2
+    assert frame_interval_seconds(2) == 0.2
+    assert frame_interval_seconds(3) == pytest.approx(180 / 700)
     assert frame_interval_seconds(30) == pytest.approx(1800 / 700)
     assert frame_interval_seconds(60) == pytest.approx(3600 / 700)
     print("frame_interval_seconds passed")
@@ -147,7 +151,7 @@ def test_recorder_start_stop_sends_video():
         ok, msg = rec.start(3)
         assert not ok and "ইতিমধ্যেই চলছে" in msg
         assert rec.status()["running"] is True
-        time.sleep(3.0)  # frame 0 at ~0 s, frame 1 at ~2 s
+        time.sleep(3.0)  # v12.14.5: frames every 0.2 s, so ~15 by now
         ok, msg = rec.stop()
         assert ok and "থামানো হলো" in msg
         assert done.wait(6), "recording did not stop in time"
@@ -172,11 +176,12 @@ def test_recorder_too_short_sends_nothing():
                              encode_fn=lambda f, d, s, fps: (Path(d) / "x.mp4", "mp4"))
         ok, _msg = rec.start(1)
         assert ok
-        # Wait until frame 0 exists (next frame is due at 2 s), then
-        # stop at once — only one frame, so no video can be made.
+        # Wait until frame 0 exists, then stop at once — only one
+        # frame, so no video can be made. Poll fast: at 5 fps the
+        # next frame is due 0.2 s after the first.
         deadline = time.time() + 3
         while rec.status()["frames"] < 1 and time.time() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.01)
         ok, msg = rec.stop()
         assert ok and "থামানো হলো" in msg
         assert done.wait(6)
@@ -245,7 +250,7 @@ def test_recorder_transient_failure_recovers():
                              encode_fn=fake_encode)
         ok, _msg = rec.start(1)
         assert ok
-        time.sleep(7.0)  # failures at ~0 s and ~2 s, good frames at ~4 s and ~6 s
+        time.sleep(7.0)  # v12.14.5: failures at ~0 s and ~0.2 s, good frames from ~0.4 s
         ok, _msg = rec.stop()
         assert ok
         assert done.wait(6)
@@ -272,7 +277,7 @@ def test_recorder_encode_failure_still_reports():
                              encode_fn=lambda f, d, s, fps: (Path(d) / "ghost.mp4", "mp4"))
         ok, _msg = rec.start(1)
         assert ok
-        time.sleep(5.0)  # frames at ~0 s, ~2 s, ~4 s
+        time.sleep(5.0)  # v12.14.5: frames every 0.2 s, so ~25 by now
         ok, _msg = rec.stop()
         assert ok
         assert done.wait(6), "encode failure left the recording hanging"
@@ -471,6 +476,146 @@ def test_capture_disposes_before_shutdown():
     print("capture disposes before shutdown passed")
 
 
+def test_cursor_struct_sizes():
+    """v12.14.5: the cursor structs must match the native layout —
+    CURSORINFO 24 bytes, ICONINFO 32, POINT 8. A wrong size means
+    GetCursorInfo writes past the buffer (the same class of bug
+    as the token crash)."""
+    import ctypes
+
+    from deskaudit.screen_record import _CursorInfo, _IconInfo, _Point
+
+    assert ctypes.sizeof(_Point) == 8
+    assert ctypes.sizeof(_CursorInfo) == 24
+    assert ctypes.sizeof(_IconInfo) == 32
+    print("cursor struct sizes passed")
+
+
+def _fake_cursor_dlls(showing=True, hotspot=(3, 5), pos=(100, 50),
+                      fail=None, hcursor=99, load_cursor=55):
+    """Fake user32/gdi32 for _draw_cursor: GetCursorInfo fills a
+    visible pointer at `pos` with handle `hcursor`, GetIconInfo
+    fills `hotspot` and two bitmaps, LoadCursorW returns
+    `load_cursor`. `fail` names a call that raises instead."""
+    import ctypes
+    from types import SimpleNamespace
+
+    from deskaudit import screen_record as sr
+
+    calls = []
+
+    def _struct(arg, cls):
+        try:
+            return arg._obj
+        except Exception:
+            return ctypes.cast(arg, ctypes.POINTER(cls)).contents
+
+    def _cursor_info(arg):
+        calls.append("GetCursorInfo")
+        if fail == "GetCursorInfo":
+            raise OSError("boom")
+        info = _struct(arg, sr._CursorInfo)
+        info.cbSize = ctypes.sizeof(sr._CursorInfo)
+        info.flags = 1 if showing else 0
+        info.hCursor = hcursor
+        info.ptScreenPos.x, info.ptScreenPos.y = pos
+        return 1
+
+    def _icon_info(hcur, arg):
+        calls.append("GetIconInfo")
+        icon = _struct(arg, sr._IconInfo)
+        icon.fIcon = 0
+        icon.xHotspot, icon.yHotspot = hotspot
+        icon.hbmMask, icon.hbmColor = 7, 8
+        return 1
+
+    def _load_cursor(hinst, name):
+        calls.append(("LoadCursorW", hinst, name))
+        return load_cursor
+
+    def _draw(hdc, x, y, hcur, cw, ch, step, brush, flags):
+        calls.append(("DrawIconEx", hdc, x, y, hcur, cw, ch, step,
+                      brush, flags))
+        return 1
+
+    def _delete(obj):
+        calls.append(("DeleteObject", obj))
+        return 1
+
+    user32 = SimpleNamespace(GetCursorInfo=_cursor_info,
+                             GetIconInfo=_icon_info,
+                             LoadCursorW=_load_cursor, DrawIconEx=_draw)
+    gdi32 = SimpleNamespace(DeleteObject=_delete)
+    return user32, gdi32, calls
+
+
+def test_draw_cursor_visible():
+    """v12.14.5: a visible pointer is drawn at its position minus
+    the hotspot (so the arrow tip sits where the pointer is), and
+    the two bitmaps GetIconInfo hands back are freed."""
+    from deskaudit import screen_record as sr
+
+    user32, gdi32, calls = _fake_cursor_dlls(
+        showing=True, hotspot=(3, 5), pos=(100, 50))
+    sr._draw_cursor(user32, gdi32, hdc_mem=12, x0=10, y0=20)
+    draws = [c for c in calls if isinstance(c, tuple)
+             and c[0] == "DrawIconEx"]
+    assert len(draws) == 1, calls
+    # hdc 12, x = 100 - 10 - 3, y = 50 - 20 - 5, cursor 99,
+    # default size, DI_NORMAL (3).
+    assert draws[0] == ("DrawIconEx", 12, 87, 25, 99, 0, 0, 0, None, 3), calls
+    assert ("DeleteObject", 7) in calls, calls
+    assert ("DeleteObject", 8) in calls, calls
+    print("draw cursor visible passed")
+
+
+def test_draw_cursor_no_handle_falls_back_to_arrow():
+    """v12.14.5: a showing cursor with no handle (Wine reports
+    exactly this under Xvfb: flags=1, hCursor=0) falls back to the
+    shared system arrow, hotspot (0, 0) — the position still shows
+    instead of the frame shipping with no pointer at all."""
+    from deskaudit import screen_record as sr
+
+    user32, gdi32, calls = _fake_cursor_dlls(
+        showing=True, hcursor=0, load_cursor=55, pos=(100, 50))
+    sr._draw_cursor(user32, gdi32, hdc_mem=12, x0=10, y0=20)
+    assert ("LoadCursorW", None, 32512) in calls, calls
+    draws = [c for c in calls if isinstance(c, tuple)
+             and c[0] == "DrawIconEx"]
+    assert len(draws) == 1, calls
+    # Arrow hotspot is (0, 0): x = 100 - 10, y = 50 - 20.
+    assert draws[0] == ("DrawIconEx", 12, 90, 30, 55, 0, 0, 0, None, 3), calls
+    assert not [c for c in calls if isinstance(c, tuple)
+                and c[0] == "DeleteObject"], calls
+    print("draw cursor no handle falls back to arrow passed")
+
+
+def test_draw_cursor_hidden():
+    """v12.14.5: a hidden pointer (or no cursor at all) draws
+    nothing and frees nothing."""
+    from deskaudit import screen_record as sr
+
+    user32, gdi32, calls = _fake_cursor_dlls(showing=False)
+    sr._draw_cursor(user32, gdi32, hdc_mem=12, x0=0, y0=0)
+    assert not [c for c in calls if isinstance(c, tuple)], calls
+    print("draw cursor hidden passed")
+
+
+def test_draw_cursor_failure_never_raises():
+    """v12.14.5: a crashing GetCursorInfo — or a DLL without the
+    cursor functions at all — must never lose a frame: _draw_cursor
+    returns silently."""
+    from deskaudit import screen_record as sr
+    from types import SimpleNamespace
+
+    user32, gdi32, calls = _fake_cursor_dlls(fail="GetCursorInfo")
+    sr._draw_cursor(user32, gdi32, hdc_mem=12, x0=0, y0=0)
+    assert calls == ["GetCursorInfo"], calls
+    sr._draw_cursor(SimpleNamespace(), SimpleNamespace(),
+                    hdc_mem=12, x0=0, y0=0)
+    print("draw cursor failure never raises passed")
+
+
 if __name__ == "__main__":
     test_validate_minutes()
     test_frame_interval_seconds()
@@ -488,4 +633,9 @@ if __name__ == "__main__":
     test_bind_native_noop_on_linux()
     test_call_labels_native_crash()
     test_capture_disposes_before_shutdown()
+    test_cursor_struct_sizes()
+    test_draw_cursor_visible()
+    test_draw_cursor_no_handle_falls_back_to_arrow()
+    test_draw_cursor_hidden()
+    test_draw_cursor_failure_never_raises()
     print("ALL SCREEN RECORD TESTS PASSED")
