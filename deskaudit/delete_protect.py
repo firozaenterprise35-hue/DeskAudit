@@ -36,7 +36,7 @@ import shutil
 import struct
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 DEFAULT_DELETE_PROTECT = {
@@ -133,6 +133,16 @@ def is_temp_path(path: str, quarantine_root: str = "",
     return False
 
 
+def parse_drive_strings(raw: str) -> list[str]:
+    """Drive roots from a double-null-terminated drive list, e.g.
+    "C:\\\\0D:\\\\0E:\\\\0" -> ["C:\\\\", "D:\\\\", "E:\\\\"]."""
+    drives = []
+    for chunk in raw.split("\x00"):
+        if len(chunk) >= 2 and chunk[1] == ":":
+            drives.append(chunk[:2] + "\\")
+    return drives
+
+
 def list_drives() -> list[str]:
     """Drive roots, e.g. ['C:\\\\', 'D:\\\\']. Windows only in
     practice; elsewhere just the filesystem root.
@@ -141,7 +151,14 @@ def list_drives() -> list[str]:
     plain "C:" is NOT the root — it is the process's current
     directory on drive C, so browsing/copying through "C:" lands in
     the wrong place and Path("C:").parent is ".". "C:\\\\" is the
-    real root, and its parent is itself."""
+    real root, and its parent is itself.
+
+    And the buffer matters (v12.12 audit): GetLogicalDriveStringsW
+    returns a DOUBLE-null-terminated list ("C:\\\\0D:\\\\0..."), but
+    ctypes' buf.value stops at the FIRST null — so the old code
+    returned only the first drive. The explorer showed only C: and
+    the delete protector only watched C:'s Recycle Bin. Read the
+    full buffer with wstring_at(buf, n) instead."""
     if sys.platform != "win32":
         return ["/"]
     try:
@@ -149,12 +166,10 @@ def list_drives() -> list[str]:
 
         buf = ctypes.create_unicode_buffer(256)
         n = ctypes.windll.kernel32.GetLogicalDriveStringsW(256, buf)
-        drives = []
-        for chunk in buf.value.split("\x00"):
-            if len(chunk) >= 2 and chunk[1] == ":":
-                drives.append(chunk[:2] + "\\")
-        if drives:
-            return drives
+        if n and n < 256:
+            drives = parse_drive_strings(ctypes.wstring_at(buf, n))
+            if drives:
+                return drives
     except Exception:
         pass
     return [f"{letter}:\\" for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -200,6 +215,47 @@ class DeleteProtector:
         self.protected_folders = [Path(p) for p in (protected_folders or [])]
         self.notify = notify  # callable(item) -> bool, e.g. bot.notify_deleted
         self.enabled = bool(self.settings.get("enabled", True))
+        self._settings_stamp: tuple | None = None
+
+    def _reload_settings(self) -> None:
+        """Re-read the delete_protect settings from config.yaml (+
+        config.local.yaml overrides) when the files changed since
+        the last load — so a quarantine-drive change in Dashboard
+        Settings -> ডিলিট সুরক্ষা takes effect within one poll
+        interval, without restarting the agent (v12.12 audit: the
+        running agent used to keep its startup settings forever).
+        Only reloads when a config file exists and changed; a torn
+        or unparseable file is ignored and the old settings kept."""
+        try:
+            cfg_path = self.project_root / "config.yaml"
+            local_path = self.project_root / "config.local.yaml"
+            if not cfg_path.exists():
+                return
+            stamp = []
+            for p in (cfg_path, local_path):
+                try:
+                    stamp.append(p.stat().st_mtime_ns)
+                except Exception:
+                    stamp.append(0)
+            stamp = tuple(stamp)
+            if stamp == self._settings_stamp:
+                return
+            import yaml
+
+            for p in (cfg_path, local_path):
+                if p.exists():
+                    with p.open(encoding="utf-8") as f:
+                        yaml.safe_load(f)  # parse check only
+            from .config import Config
+
+            cfg = Config.load(cfg_path)
+            self.settings = {**DEFAULT_DELETE_PROTECT,
+                             **(cfg.delete_protect or {})}
+            self.enabled = bool(self.settings.get("enabled", True))
+            self.protected_folders = list(cfg.effective_watch_folders())
+            self._settings_stamp = stamp
+        except Exception as exc:
+            self.log.warning("Delete-protect settings reload failed: %s", exc)
 
     # -- paths ------------------------------------------------------
     @property
@@ -303,6 +359,7 @@ class DeleteProtector:
         হ্যাঁ/না Telegram message as a Recycle Bin delete, so the
         file/folder can be restored from /deleted. System paths and
         the quarantine folder itself are refused."""
+        self._reload_settings()
         from .file_explorer import dir_size, is_system_path
 
         target = Path(path)
@@ -354,19 +411,28 @@ class DeleteProtector:
                     key = f"{info_path}"
                     if key in seen_set:
                         continue
-                    seen.append(key)
-                    seen_set.add(key)
-                    changed = True
                     parsed = parse_recycle_info(info_path)
                     if parsed is None:
+                        # Unreadable metadata: mark seen so a broken
+                        # $I is not retried forever.
+                        seen.append(key)
+                        seen_set.add(key)
+                        changed = True
                         continue
                     original = parsed["original_path"]
                     if is_temp_path(original, str(self.quarantine_root),
                                     str(self.project_root)):
+                        seen.append(key)
+                        seen_set.add(key)
+                        changed = True
                         continue
                     recycle_file = info_path.with_name("$R" + info_path.name[2:])
                     if not recycle_file.exists():
-                        continue  # already emptied from the bin
+                        # Already emptied from the bin.
+                        seen.append(key)
+                        seen_set.add(key)
+                        changed = True
+                        continue
                     try:
                         size = parsed["size_bytes"] or (
                             recycle_file.stat().st_size if recycle_file.is_file() else 0)
@@ -376,6 +442,13 @@ class DeleteProtector:
                     item = self._quarantine(recycle_file, name, original, size,
                                             "recycle_bin", parsed["deleted_at"])
                     if item is not None:
+                        # Only now is it seen: if the quarantine move
+                        # failed (disk full, locked file), the $I is
+                        # left unmarked so the next scan retries it
+                        # instead of forgetting the delete (v12.12).
+                        seen.append(key)
+                        seen_set.add(key)
+                        changed = True
                         found.append(item)
                         # The $I entry is now orphaned — drop it so the
                         # bin does not show a broken entry.
@@ -383,6 +456,10 @@ class DeleteProtector:
                             info_path.unlink()
                         except Exception:
                             pass
+                    else:
+                        self.log.warning(
+                            "Delete protection: could not quarantine %s "
+                            "(will retry next scan).", original)
         if changed:
             self._save_seen(seen)
         return found
@@ -393,30 +470,37 @@ class DeleteProtector:
         return f"{digest}_{source.name}"
 
     def _prune_mirror(self) -> None:
-        """Prune old mirror copies past retention / cap. Held items
-        are never touched — only the owner can purge those."""
+        """Prune mirror copies that have NO manifest entry (orphans:
+        their source vanished without a quarantine, e.g. the DB was
+        reset). A mirror copy whose source still exists is NEVER
+        pruned by age or size (v12.12 audit): copy2 preserves the
+        source's mtime, so the old retention check deleted the
+        mirror of any file untouched for 30 days — and the next
+        Shift+Delete of that file was then silently unrecoverable.
+        The cap is enforced when copying (scan_protected), not by
+        deleting live protection."""
         try:
             cap_bytes = int(self.settings.get("quarantine_max_gb", 10) or 10) * 1024 ** 3
-            retention = timedelta(days=int(self.settings.get("mirror_retention_days", 30) or 30))
         except (TypeError, ValueError):
             return
         if not self.mirror_dir.is_dir():
             return
         try:
+            manifest = self._mirror_manifest()
+            live = {str(v[2]) for v in manifest.values() if len(v) >= 3}
             entries = []
             for p in self.mirror_dir.iterdir():
+                if p.name in live:
+                    continue  # still protecting a live file — keep it
                 try:
                     st = p.stat()
                     entries.append((st.st_mtime, st.st_size, p))
                 except Exception:
                     continue
-            now = time.time()
-            total = sum(size for _, size, _ in entries)
+            total = self._mirror_total_bytes()
             for mtime, _size, p in sorted(entries):
-                over_cap = total > cap_bytes
-                too_old = now - mtime > retention.total_seconds()
-                if not (over_cap or too_old):
-                    continue
+                if total <= cap_bytes:
+                    break
                 try:
                     if p.is_dir():
                         shutil.rmtree(p, ignore_errors=True)
@@ -429,11 +513,14 @@ class DeleteProtector:
             pass
 
     def _find_move_target(self, source: str) -> str | None:
-        """A 'moved' file event from the agent's own file watcher, so
-        a rename is not mistaken for a delete."""
+        """A RECENT 'moved' file event from the agent's own file
+        watcher, so a rename is not mistaken for a delete. Only
+        moves from the last hour count (v12.12 audit): the old code
+        took the latest event of ANY age, so a file moved months ago
+        could mask a real delete of a new file at the same path."""
         try:
             rows = self.db.conn.execute(
-                """SELECT dest_path FROM file_events
+                """SELECT dest_path, occurred_at FROM file_events
                    WHERE event_type = 'moved' AND path = ?
                    ORDER BY occurred_at DESC LIMIT 1""",
                 (source,)).fetchall()
@@ -442,7 +529,32 @@ class DeleteProtector:
         if not rows:
             return None
         dest = (rows[0]["dest_path"] or "").strip()
-        return dest or None
+        if not dest:
+            return None
+        try:
+            when = datetime.fromisoformat(str(rows[0]["occurred_at"]))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            if (datetime.now().astimezone() - when).total_seconds() > 3600:
+                return None  # an old move — not this disappearance
+        except Exception:
+            return None  # unreadable time: do not trust it as a rename
+        return dest
+
+    def _mirror_total_bytes(self) -> int:
+        """Current size of the mirror folder (0 when it is missing)."""
+        try:
+            if not self.mirror_dir.is_dir():
+                return 0
+            total = 0
+            for p in self.mirror_dir.iterdir():
+                try:
+                    total += p.stat().st_size if p.is_file() else 0
+                except Exception:
+                    continue
+            return total
+        except Exception:
+            return 0
 
     def scan_protected(self) -> list[dict]:
         """Sync the mirror, then quarantine mirror copies whose source
@@ -457,8 +569,13 @@ class DeleteProtector:
         except (TypeError, ValueError):
             max_mb = 500
         max_bytes = max_mb * 1024 * 1024
+        try:
+            cap_bytes = int(self.settings.get("quarantine_max_gb", 10) or 10) * 1024 ** 3
+        except (TypeError, ValueError):
+            cap_bytes = 10 * 1024 ** 3
         copied_files = 0
         copied_bytes = 0
+        cap_warned = False
         # 1) Copy new / changed files into the mirror (budgeted).
         for folder in self.protected_folders:
             if not folder.is_dir():
@@ -489,6 +606,18 @@ class DeleteProtector:
                 old = manifest.get(key)
                 if old and old[0] == st.st_mtime_ns and old[1] == st.st_size:
                     continue  # unchanged
+                # Cap: when the mirror is already full, do not copy
+                # new files (and do not delete live protection to make
+                # room — v12.12). The file stays unmirrored until the
+                # owner frees space or raises the cap.
+                if self._mirror_total_bytes() + st.st_size > cap_bytes:
+                    if not cap_warned:
+                        cap_warned = True
+                        self.log.warning(
+                            "Delete protection: mirror is full (%s cap) — "
+                            "%s is not mirrored until space is freed.",
+                            _fmt_size(cap_bytes), path)
+                    continue
                 mirror_name = self._mirror_name(path)
                 dest = self.mirror_dir / mirror_name
                 try:
@@ -522,15 +651,23 @@ class DeleteProtector:
                 continue
             item = self._quarantine(mirror_path, Path(source).name, source,
                                     size, "mirror", datetime.now())
-            del manifest[source]
             if item is not None:
+                del manifest[source]
                 found.append(item)
+            else:
+                # The quarantine move failed (disk full, locked file):
+                # keep the manifest entry so the next scan retries
+                # instead of forgetting the delete (v12.12).
+                self.log.warning(
+                    "Delete protection: could not quarantine %s "
+                    "(will retry next scan).", source)
         self._save_manifest(manifest)
         self._prune_mirror()
         return found
 
     def scan(self) -> list[dict]:
         """One full pass: Recycle Bins, then the protected mirror."""
+        self._reload_settings()
         try:
             found = self.scan_recycle_bins()
         except Exception as exc:
@@ -567,15 +704,21 @@ class DeleteProtector:
             self.db.set_quarantine_status(qid, "restored")
             # Re-mirror at once, so a second delete right after the
             # restore is protected too — without waiting for the next
-            # scan to notice the file is back.
+            # scan to notice the file is back. Only when the file fits
+            # the mirror cap and is not a temp file (v12.12: the old
+            # code re-mirrored any size, bypassing the cap).
             try:
                 self._ensure_dirs()
-                mirror_name = self._mirror_name(dest)
-                shutil.copy2(str(dest), str(self.mirror_dir / mirror_name))
-                st = dest.stat()
-                manifest = self._mirror_manifest()
-                manifest[str(dest)] = [st.st_mtime_ns, st.st_size, mirror_name]
-                self._save_manifest(manifest)
+                max_mb = int(self.settings.get("mirror_max_mb", 500) or 500)
+                if (dest.is_file() and dest.stat().st_size <= max_mb * 1024 * 1024
+                        and not is_temp_path(str(dest), str(self.quarantine_root),
+                                            str(self.project_root))):
+                    mirror_name = self._mirror_name(dest)
+                    shutil.copy2(str(dest), str(self.mirror_dir / mirror_name))
+                    st = dest.stat()
+                    manifest = self._mirror_manifest()
+                    manifest[str(dest)] = [st.st_mtime_ns, st.st_size, mirror_name]
+                    self._save_manifest(manifest)
             except Exception:
                 pass
         except Exception as exc:

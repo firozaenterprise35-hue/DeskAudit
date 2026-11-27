@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import deskaudit.telegram as tg  # noqa: E402
 from deskaudit.database import Database  # noqa: E402
 from deskaudit.delete_protect import (  # noqa: E402
-    DeleteProtector, is_temp_path, parse_recycle_info)
+    DeleteProtector, is_temp_path, parse_drive_strings, parse_recycle_info)
 from deskaudit.telegram import TelegramBot  # noqa: E402
 from deskaudit.utils import today_str  # noqa: E402
 
@@ -262,6 +262,127 @@ def test_settings_roundtrip():
     print("settings roundtrip passed")
 
 
+def test_parse_drive_strings():
+    # v12.12: the old list_drives read buf.value, which stops at the
+    # first null — only the first drive ever came back.
+    assert parse_drive_strings("C:\\\x00D:\\\x00E:\\\x00F:\\\x00G:\\\x00") == [
+        "C:\\", "D:\\", "E:\\", "F:\\", "G:\\"]
+    assert parse_drive_strings("C:\\\x00Z:\\\x00") == ["C:\\", "Z:\\"]
+    assert parse_drive_strings("C:\\\x00") == ["C:\\"]
+    assert parse_drive_strings("") == []
+    assert parse_drive_strings("C:\\\x00bad\x00") == ["C:\\"]
+    print("parse drive strings passed")
+
+
+def test_mirror_prune_keeps_old_files():
+    # v12.12: copy2 preserves the source mtime, so the old retention
+    # prune deleted the mirror of any file untouched for 30 days —
+    # and the next Shift+Delete of that file was silently lost.
+    tmp = tempfile.mkdtemp()
+    db = Database(Path(tmp) / "db.sqlite")
+    root = Path(tmp) / "project"
+    protected = Path(tmp) / "Documents"
+    protected.mkdir()
+    target = protected / "old-report.docx"
+    target.write_text("thirty days untouched", encoding="utf-8")
+    protector = DeleteProtector(db, {}, _NullLog(), project_root=root,
+                                protected_folders=[protected])
+    assert protector.scan_protected() == []
+    mirror = list((root / "data" / "quarantine" / "mirror").glob("*"))
+    assert len(mirror) == 1
+    old = time.time() - 40 * 86400
+    os.utime(mirror[0], (old, old))
+    # A scan must NOT prune the mirror of a file that still exists.
+    assert protector.scan_protected() == []
+    assert mirror[0].exists(), "mirror of a live file was pruned"
+    # And its Shift+Delete is still recoverable.
+    target.unlink()
+    found = protector.scan_protected()
+    assert len(found) == 1 and found[0]["file_name"] == "old-report.docx"
+    print("mirror prune keeps old files passed")
+
+
+def test_stale_move_does_not_mask_delete():
+    # v12.12: the old code took the latest 'moved' event of ANY age,
+    # so a file moved long ago could mask a real delete of a new file
+    # created later at the same path. Only moves from the last hour
+    # count as a rename now.
+    tmp = tempfile.mkdtemp()
+    db = Database(Path(tmp) / "db.sqlite")
+    root = Path(tmp) / "project"
+    protected = Path(tmp) / "Documents"
+    protected.mkdir()
+    old = protected / "old.txt"
+    old.write_text("moved away", encoding="utf-8")
+    protector = DeleteProtector(db, {}, _NullLog(), project_root=root,
+                                protected_folders=[protected])
+    assert protector.scan_protected() == []
+    new = protected / "new.txt"
+    old.rename(new)
+    db.log_file_event("moved", str(old), dest_path=str(new))
+    assert protector.scan_protected() == []  # the fresh rename follows
+    # A NEW file appears at the old path, is mirrored, then deleted.
+    old.write_text("brand new file", encoding="utf-8")
+    assert protector.scan_protected() == []
+    # Age the moved event to 30 days ago: it must no longer explain
+    # this disappearance.
+    stale = (datetime.now().astimezone() - timedelta(days=30)
+             ).isoformat(timespec="seconds")
+    db.conn.execute("UPDATE file_events SET occurred_at = ? WHERE path = ?",
+                    (stale, str(old)))
+    db.conn.commit()
+    old.unlink()
+    found = protector.scan_protected()
+    assert len(found) == 1, found
+    assert found[0]["file_name"] == "old.txt"
+    assert found[0]["source"] == "mirror"
+    print("stale move does not mask delete passed")
+
+
+def test_failed_quarantine_retries():
+    # v12.12: the old code marked a $I as seen BEFORE the quarantine
+    # move, so a failed move (disk full, locked file) was forgotten
+    # forever. Now the $I stays unmarked and the next scan retries.
+    tmp = tempfile.mkdtemp()
+    db = Database(Path(tmp) / "db.sqlite")
+    root = Path(tmp) / "project"
+    protector = DeleteProtector(db, {}, _NullLog(), project_root=root)
+    _make_info_bin(tmp, r"D:\\Office\\report.docx", b"report-bytes")
+    held = root / "data" / "quarantine" / "held"
+    held.parent.mkdir(parents=True, exist_ok=True)
+    held.write_bytes(b"blocker")  # a file where the held dir should be
+    found = protector.scan_recycle_bins([Path(tmp) / "$Recycle.Bin"])
+    assert found == []
+    assert protector._seen() == []  # not marked seen — retry next scan
+    held.unlink()
+    found = protector.scan_recycle_bins([Path(tmp) / "$Recycle.Bin"])
+    assert len(found) == 1 and found[0]["file_name"] == "report.docx"
+    print("failed quarantine retries passed")
+
+
+def test_settings_reload():
+    # v12.12: the running agent used to keep its startup settings
+    # forever — a quarantine-drive change in Dashboard Settings did
+    # nothing until the agent restarted. scan() now reloads it.
+    tmp = tempfile.mkdtemp()
+    root = Path(tmp) / "project"
+    root.mkdir()
+    db = Database(Path(tmp) / "db.sqlite")
+    (root / "config.yaml").write_text(
+        "delete_protect:\n  quarantine_path: 'custom-q'\n", encoding="utf-8")
+    protector = DeleteProtector(db, {}, _NullLog(), project_root=root)
+    assert protector.quarantine_root == root / "data" / "quarantine"
+    assert protector.scan() == []
+    assert protector.quarantine_root == root / "custom-q"
+    time.sleep(0.05)
+    (root / "config.yaml").write_text(
+        "delete_protect:\n  quarantine_path: 'E:/DeskAudit-Quarantine'\n",
+        encoding="utf-8")
+    assert protector.scan() == []
+    assert protector.quarantine_root == root / "E:/DeskAudit-Quarantine"
+    print("settings reload passed")
+
+
 class _NullLog:
     def info(self, *a, **k):
         pass
@@ -283,4 +404,9 @@ if __name__ == "__main__":
     test_telegram_delete_choice()
     test_cli_delete_protect_test()
     test_settings_roundtrip()
+    test_parse_drive_strings()
+    test_mirror_prune_keeps_old_files()
+    test_stale_move_does_not_mask_delete()
+    test_failed_quarantine_retries()
+    test_settings_reload()
     print("ALL DELETE PROTECT TESTS PASSED")

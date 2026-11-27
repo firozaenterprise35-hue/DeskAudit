@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -490,6 +490,49 @@ argument), or opens the token-bound ✅/❌ confirmation first
 (shutdown/restart/reset) — one tap can never close, delete or shut
 anything down. `/help` is regrouped the same way.
 
+
+**Delete-protection audit fixes (v12.12)** — the owner reported two
+things: the explorer did not show all drives, and the delete
+protection did not work properly. A full audit found the root cause
+and four more real bugs:
+- **Only the first drive was ever listed:** GetLogicalDriveStringsW
+  returns a double-null-terminated list ("C:\\0D:\\0..."), but
+  the code read `buf.value`, which stops at the first null — so
+  `list_drives` returned only C:. The explorer showed only C:, and
+  the delete protector only watched C:'s Recycle Bin: a normal
+  delete on D:/E:/F:/G: was never quarantined and never messaged.
+  Fixed by reading the full buffer with `wstring_at(buf, n)`
+  (new `parse_drive_strings`); verified under Wine with a mapped
+  D: drive — C:, D: and Z: are all listed, and fake Recycle Bins on
+  both C: and D: are quarantined.
+- **The mirror pruned live protection:** `copy2` preserves the
+  source file's mtime, so the retention prune deleted the mirror
+  copy of any file untouched for 30 days — and the next Shift+Delete
+  of that file was then silently unrecoverable. The prune now
+  touches only orphan mirror copies (no manifest entry); the size
+  cap is enforced when copying new files instead, with a warning.
+- **A stale rename could mask a real delete:** the rename check
+  took the latest 'moved' event of ANY age. Only moves from the
+  last hour count now; an older move is treated as a delete (the
+  file is preserved in quarantine, the safe direction).
+- **A failed quarantine was forgotten:** the $I entry was marked
+  seen BEFORE the quarantine move, so a failed move (disk full,
+  locked file) was never retried. It is marked seen only after a
+  successful quarantine now; a failed mirror quarantine also keeps
+  its manifest entry for the next scan.
+- **Settings needed a restart:** the running agent kept its startup
+  settings, so a quarantine-drive change in Dashboard Settings did
+  nothing until the agent restarted. The protector now reloads its
+  settings from config.yaml whenever the files change, so the new
+  quarantine drive takes effect within one poll interval (~30 s).
+  Restore re-mirroring now also respects the mirror size cap.
+- Honest limits, unchanged: a Shift+Delete OUTSIDE the protected
+  folders (Desktop, Documents, sensitive folders) is only detected
+  and logged — its content cannot be recovered; files over
+  `mirror_max_mb` (default 500 MB) are not mirrored; the Recycle
+  Bin scan covers every drive that has a bin, including USB drives
+  plugged in after the agent started.
+
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
 problems, and finished the explorer in every direction:
@@ -693,7 +736,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.11.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.12.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -732,17 +775,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.11-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.12-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.11.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.12.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.11.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.12.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
