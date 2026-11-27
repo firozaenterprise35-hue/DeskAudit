@@ -186,8 +186,12 @@ def test_menu_and_callbacks():
             kb = payload["reply_markup"]["inline_keyboard"]
             assert any(b["callback_data"] == "m:status"
                        for row in kb for b in row)
-            assert not any(b["callback_data"].startswith("m:reset")
-                           for row in kb for b in row)  # nothing destructive
+            # The full menu (v12.10) MAY list destructive actions — but
+            # a tap must never execute one directly: it only asks first.
+            bot.handle_callback("m:shutdown", "cb-sh")
+            pending = bot._get_pending()
+            assert pending and pending["action"] == "shutdown"
+            bot._clear_pending()
             # Tap the Status button.
             bot.handle_callback("m:status", "cb-1")
             assert any("বর্তমান অবস্থা" in t for _, t in net.sent)
@@ -199,6 +203,87 @@ def test_menu_and_callbacks():
             net.uninstall()
             db.close()
     print("menu and callbacks passed")
+
+
+def test_full_menu():
+    """The v12.10 menu: every feature as a button, grouped; prompt
+    buttons only ask, destructive buttons only open the confirmation,
+    nothing executes on one tap."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db, day = _seed_db(os.path.join(tmp, "t.db"))
+        bot, root = _make_bot(tmp, db)
+        net = _Net().install()
+        try:
+            kb = tg.menu_keyboard()["inline_keyboard"]
+            have = {b["callback_data"] for row in kb for b in row}
+            for want in ("m:status", "m:today", "m:week", "m:apps",
+                         "m:projects", "m:transfers", "m:files", "m:alerts",
+                         "m:search", "m:report", "m:browser", "m:shot",
+                         "m:explore", "m:hidden", "m:deleted", "m:help",
+                         "m:screen", "m:lock", "m:close", "m:freeze",
+                         "m:pause", "m:resume", "m:mute", "m:unmute",
+                         "m:digest", "m:goal", "m:backup", "m:clear",
+                         "m:shutdown", "m:restart", "m:abort", "m:reset"):
+                assert want in have, f"menu is missing {want}"
+            # /menu posts the grouped text.
+            bot.handle_text("/menu")
+            assert "ডেটা ও PC" in net.last_text()
+            # Prompt buttons only ask for what they need.
+            bot.handle_callback("m:search", "cb-s")
+            assert "/search <শব্দ>" in net.last_text()
+            bot.handle_callback("m:close", "cb-c")
+            assert "/close <অ্যাপ>" in net.last_text()
+            bot.handle_callback("m:freeze", "cb-f")
+            assert "/freeze <অ্যাপ>" in net.last_text()
+            bot.handle_callback("m:goal", "cb-g")
+            assert "/goal <প্রজেক্ট>" in net.last_text()
+            bot.handle_callback("m:clear", "cb-cl")
+            assert "/clear <তারিখ>" in net.last_text()
+            bot.handle_callback("m:digest", "cb-d")
+            assert "ডাইজেস্ট এখন" in net.last_text()
+            # Screen sub-menu, then a screen tap (Linux: windows-only).
+            bot.handle_callback("m:screen", "cb-sc")
+            assert any(b["callback_data"] == "m:screen_white"
+                       for row in net.posts[-1][1]["reply_markup"]["inline_keyboard"]
+                       for b in row)
+            bot.handle_callback("m:screen_white", "cb-sw")
+            assert "শুধু Windows PC-তে চলে" in net.last_text()
+            bot.handle_callback("m:lock", "cb-l")
+            assert "শুধু Windows PC-তে চলে" in net.last_text()
+            # Mute / unmute through the menu.
+            bot.handle_callback("m:mute", "cb-m")
+            assert bot.muted() is True
+            bot.handle_callback("m:unmute", "cb-u")
+            assert bot.muted() is False
+            # Backup runs at once.
+            bot.handle_callback("m:backup", "cb-b")
+            assert "ব্যাকআপ নেওয়া হয়েছে" in net.last_text()
+            # Shutdown only ASKS — the tap itself shuts down nothing.
+            bot.handle_callback("m:shutdown", "cb-sh")
+            pending = bot._get_pending()
+            assert pending and pending["action"] == "shutdown"
+            assert "কার্যকর নয়" in bot._run_pending("deadbeef", from_button=True)
+            assert "শুধু Windows PC-তে চলে" in bot._run_pending(
+                pending["token"], from_button=True)
+            # Reset only asks too.
+            bot.handle_callback("m:reset", "cb-r")
+            pending = bot._get_pending()
+            assert pending and pending["action"] == "reset"
+            bot._clear_pending()
+            # Abort is a plain Windows-only message on Linux.
+            bot.handle_callback("m:abort", "cb-a")
+            assert "শুধু Windows PC-তে চলে" in net.last_text()
+            # Back to the menu; a noop tap sends nothing new.
+            before = len(net.texts())
+            bot.handle_callback("m:menu", "cb-mm")
+            assert "DeskAudit মেনু" in net.last_text()
+            assert len(net.texts()) == before + 1
+            bot.handle_callback("m:noop", "cb-n")
+            assert len(net.texts()) == before + 1
+        finally:
+            net.uninstall()
+            db.close()
+    print("full menu passed")
 
 
 def test_pause_resume():
@@ -620,6 +705,7 @@ def test_ok_does_not_confirm():
 if __name__ == "__main__":
     test_query_commands()
     test_menu_and_callbacks()
+    test_full_menu()
     test_pause_resume()
     test_mute_unmute()
     test_digest_command()

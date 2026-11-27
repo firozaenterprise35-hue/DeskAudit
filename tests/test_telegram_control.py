@@ -201,7 +201,13 @@ def test_help_and_menu_new_buttons():
             kb = payload["reply_markup"]["inline_keyboard"]
             flat = [b["callback_data"] for row in kb for b in row]
             assert "m:shot" in flat and "m:browser" in flat
-            assert not any(c.startswith("m:shutdown") for c in flat)
+            # The full menu (v12.10) lists shutdown/restart too — but a
+            # tap only opens the confirmation, it never shuts down.
+            assert "m:shutdown" in flat and "m:restart" in flat
+            bot.handle_callback("m:shutdown", "cb-sh")
+            pending = bot._get_pending()
+            assert pending and pending["action"] == "shutdown"
+            bot._clear_pending()
             bot.handle_callback("m:shot", "cb-1")
             assert "Windows" in net.last_text()
             bot.handle_callback("m:browser", "cb-2")

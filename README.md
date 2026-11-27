@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -475,6 +475,65 @@ the files she needs.
   limit, allowed roots). CLI: `--explorer-test [PATH]` (drives, or one
   folder's entries) and `--hidden-list`.
 
+**Full Telegram menu (v12.10)** — the owner asked for every feature
+in the Telegram menu, properly. `/menu` now lists everything, in
+three groups: 📊 দেখা (status, today, week, apps, projects,
+transfers, files, alerts, search, report, browser, screenshot,
+explore, hidden, deleted, help), 🎛️ নিয়ন্ত্রণ (screen, lock,
+close, freeze, pause, resume, mute, unmute, digest, goal) and
+💾 ডেটা ও PC (backup, clear, shutdown, restart, abort, reset).
+`/screen` opens a sub-menu (white / black / lift the overlay).
+The safety rule from v12.2 is kept, not relaxed: NO button executes
+a destructive action by itself. A button either shows something,
+asks what is needed (close/freeze/goal/clear/search need an
+argument), or opens the token-bound ✅/❌ confirmation first
+(shutdown/restart/reset) — one tap can never close, delete or shut
+anything down. `/help` is regrouped the same way.
+
+**360° Telegram file explorer (v12.11)** — the owner asked: does
+the file explorer actually work properly? A full audit found 8 real
+problems, and finished the explorer in every direction:
+- **Drive roots were wrong on real Windows:** `list_drives` returned
+  "C:" — but on real Windows that is the process's current directory
+  on drive C, not the root, so browsing C: showed the wrong folder,
+  copying into "C:" landed in the agent's folder, and ⬆️ from a drive
+  root escaped to the install folder. (Wine masks this — its Python
+  resolves "C:" to the root.) Roots are now real roots ("C:\\"),
+  everywhere.
+- **Stale pending confirmations:** explorer taps never cleared a
+  pending confirmation (only menu taps and "/" commands did), so a
+  "হ্যাঁ" typed later could fire an old hide/copy — the same class
+  as the v12.3 bug. Every explorer tap now clears the pending first.
+- **Stale browsing message:** after a copy/move/hide confirm, the
+  browsing message still showed the old "📍 কপি করব" line. It is
+  refreshed at once now.
+- **Hide/unhide edge cases:** the "already hidden" check used a raw
+  `startswith` (false positives, and it missed relative hidden
+  paths — which themselves resolved against the process folder
+  instead of the install folder, now fixed for the hidden folder
+  and the quarantine folder too); an unhide whose hidden copy is
+  gone left a dead row in /hidden forever (now marked purged).
+- **/hidden showed only 10 files, no paging** — files 11+ had no
+  restore button. It is paged 10 per page now, and the buttons
+  message is edited in place.
+- **New — folders are first-class:** a ⚙️ button on every folder
+  selects it (its name still opens it); folders can be copied,
+  moved, hidden, renamed, deleted and sent as a zip (within the
+  50 MB send limit). Folder copy/move over 1 GB is refused with a
+  clear message (same-drive moves are instant renames and are not
+  capped).
+- **New — rename, new folder, search, delete:** ✏️ নাম বদলাও and
+  📁 নতুন ফোল্ডার ask for the name in the chat (type 'বাতিল' to
+  cancel); 🔎 খুঁজুন searches the current folder tree by name
+  (500 entries scanned, 20 results); 🗑️ মুছে ফেলো moves the file
+  or folder into the v12.8 delete-protect quarantine, with the
+  usual হ্যাঁ/না message and restore from /deleted.
+- **New — details and free space:** selecting a file or folder
+  shows its size, date and full path (folders: total size + item
+  count); the drives view shows each drive's free space.
+- `/explore <file path>` now opens the parent folder and selects
+  the file, instead of saying "not found".
+
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
@@ -634,7 +693,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.9.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.11.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -673,17 +732,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.9-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.11-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.9.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.11.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.9.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.11.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

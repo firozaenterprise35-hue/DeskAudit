@@ -11,3 +11,5 @@ installer/Output/
 .env
 config.local.yaml
 PAUSE
+hidden/
+quarantine/

@@ -21,6 +21,10 @@ Commands (only the owner's chat id may use them; others are ignored):
     confirmation; /reset backs the DB up first).
   /backup — back the DB up now. /goal <project> <minutes> — set a
   daily project goal.
+  /explore [folder] — browse drives/folders from Telegram: copy,
+    move, send (files, or folders as a zip), hide, rename, make a
+    new folder, search, or delete into the delete-protect
+    quarantine. /hidden — list hidden files and restore them.
 
 Destructive commands ask "নিশ্চিত?" first and only run after the
 owner replies হ্যাঁ/yes (or taps ✅). The pending confirmation is
@@ -897,48 +901,81 @@ def build_search_text(db, day: str, query: str) -> str:
 
 
 HELP_TEXT = (
-    "👋 DeskAudit বট — কমান্ড:\n"
-    "📊 দেখা: /status /today /week /apps /projects /transfers /alerts /files\n"
-    "🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন>\n"
-    "📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
-    "🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
-    "📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
-    "📋 /menu — বোতামসহ মেনু\n"
-    "⏸ /pause — অডিট বন্ধ | ▶️ /resume — আবার চালু\n"
-    "🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ | /unmute — আবার চালু\n"
-    "🕐 /digest <মিনিট|off> — ডাইজেস্টের সময় বদলানো\n"
-    "🔒 /lock — কম্পিউটার লক করা\n"
-    "⬜ /screen white | /screen black | /screen off — স্ক্রিন ঢাকা/খোলা\n"
-    "❌ /close <অ্যাপ> — চলমান অ্যাপ বন্ধ (নিশ্চিতকরণ লাগবে)\n"
-    "🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze — আবার চালু\n"
-    "⏻ /shutdown | /restart — PC বন্ধ/রিস্টার্ট (নিশ্চিতকরণ লাগবে) | /abort — বাতিল\n"
-    "🗑 /clear [তারিখ] — এক দিনের ডেটা মোছা (নিশ্চিতকরণ লাগবে)\n"
-    "🗑 /deleted — ডিলিট হওয়া ফাইল, যা সুরক্ষায় লুকিয়ে আছে\n"
-    "📂 /explore [ফোল্ডার] — ড্রাইভ/ফোল্ডার ঘুরে দেখা, ফাইল কপি/মুভ/পাঠানো/হাইড করা\n"
-    "🫥 /hidden — লুকানো ফাইল দেখা ও ফিরিয়ে দেওয়া\n"
-    "♻️ /reset — সব ডেটা মুছে নতুন শুরু, আগে ব্যাকআপ নেবে\n"
-    "💾 /backup — এখনই ব্যাকআপ নেওয়া\n"
-    "🎯 /goal <প্রজেক্ট> <মিনিট> — দৈনিক লক্ষ্য বদলানো\n"
+    "👋 DeskAudit বট — সব কমান্ড (/menu-তেও বোতাম আছে):\n"
+    "📊 দেখা:\n"
+    "  /status /today /week /apps /projects /transfers /alerts /files\n"
+    "  🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন>\n"
+    "  📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
+    "  🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
+    "  📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
+    "  📂 /explore [ফোল্ডার] — ড্রাইভ/ফোল্ডার ঘুরে দেখা: ফাইল ও ফোল্ডার\n"
+    "    কপি/মুভ/পাঠানো/হাইড, নাম বদলানো, নতুন ফোল্ডার, খোঁজা, মুছে ফেলা\n"
+    "  🫥 /hidden — লুকানো ফাইল দেখা ও ফিরিয়ে দেওয়া\n"
+    "  🗑 /deleted — ডিলিট হওয়া ফাইল, যা সুরক্ষায় লুকিয়ে আছে\n"
+    "🎛️ নিয়ন্ত্রণ:\n"
+    "  ⬜ /screen white | /screen black | /screen off — স্ক্রিন ঢাকা/খোলা\n"
+    "  🔒 /lock — কম্পিউটার লক করা\n"
+    "  ❌ /close <অ্যাপ> — চলমান অ্যাপ বন্ধ (নিশ্চিতকরণ লাগবে)\n"
+    "  🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze — আবার চালু\n"
+    "  ⏸ /pause — অডিট বন্ধ | ▶️ /resume — আবার চালু\n"
+    "  🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ | /unmute — আবার চালু\n"
+    "  🕐 /digest <মিনিট|off> — ডাইজেস্টের সময় বদলানো\n"
+    "  🎯 /goal <প্রজেক্ট> <মিনিট> — দৈনিক লক্ষ্য বদলানো\n"
+    "💾 ডেটা ও PC:\n"
+    "  💾 /backup — এখনই ব্যাকআপ নেওয়া\n"
+    "  🗑 /clear [তারিখ] — এক দিনের ডেটা মোছা (নিশ্চিতকরণ লাগবে)\n"
+    "  ⏻ /shutdown | /restart — PC বন্ধ/রিস্টার্ট (নিশ্চিতকরণ লাগবে) | /abort — বাতিল\n"
+    "  ♻️ /reset — সব ডেটা মুছে নতুন শুরু, আগে ব্যাকআপ নেবে\n"
     "শুধু আপনার চ্যাট থেকেই কমান্ড চলে।"
 )
 
 
 def menu_keyboard() -> dict:
-    """Inline keyboard for /menu — read-only actions + pause/resume
-    only. Nothing destructive is one tap away."""
+    """Inline keyboard for /menu — every feature, grouped so the
+    owner can reach it with one tap.
+
+    The safety rule (v12.2, kept in every version since): NO button
+    executes a destructive action by itself. A button either shows
+    something, asks what is needed (close/freeze/goal/clear/search
+    need an argument), or opens the token-bound confirmation first
+    (shutdown/restart/reset). Tapping a button can never delete,
+    close or shut anything down on its own."""
     def btn(text, data):
         return {"text": text, "callback_data": data}
 
     return {"inline_keyboard": [
+        # 📊 দেখা — read-only, one tap shows it.
         [btn("📊 বর্তমান অবস্থা", "m:status"), btn("📅 আজকের সারাংশ", "m:today")],
-        [btn("📸 স্ক্রিনশট", "m:shot"), btn("🌐 ব্রাউজার", "m:browser")],
         [btn("📅 সপ্তাহ", "m:week"), btn("🖥️ অ্যাপ", "m:apps")],
         [btn("🎯 প্রজেক্ট", "m:projects"), btn("🔒 ট্রান্সফার", "m:transfers")],
         [btn("📁 ফাইল", "m:files"), btn("⚠️ অ্যালার্ট", "m:alerts")],
-        [btn("📄 রিপোর্ট", "m:report"), btn("⏸ বিরতি", "m:pause")],
-        [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("▶️ আবার চালু", "m:resume")],
+        [btn("🔎 খোঁজা", "m:search"), btn("📄 রিপোর্ট", "m:report")],
+        [btn("🌐 ব্রাউজার", "m:browser"), btn("📸 স্ক্রিনশট", "m:shot")],
         [btn("📂 ফাইল ঘোরাঘুরি", "m:explore"), btn("🫥 লুকানো ফাইল", "m:hidden")],
-        [btn("❓ সাহায্য", "m:help")],
+        [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("❓ সাহায্য", "m:help")],
+        # 🎛️ নিয়ন্ত্রণ — one tap, or a prompt for what is needed.
+        [btn("⬜ স্ক্রিন", "m:screen"), btn("🔒 কম্পিউটার লক", "m:lock")],
+        [btn("❌ অ্যাপ বন্ধ", "m:close"), btn("🧊 অ্যাপ স্থগিত", "m:freeze")],
+        [btn("⏸ বিরতি", "m:pause"), btn("▶️ আবার চালু", "m:resume")],
+        [btn("🔕 চুপ করো", "m:mute"), btn("🔔 আবার চালু", "m:unmute")],
+        [btn("🕐 ডাইজেস্ট", "m:digest"), btn("🎯 লক্ষ্য", "m:goal")],
+        # 💾 ডেটা ও PC — backup runs at once; the rest ask first.
+        [btn("💾 ব্যাকআপ", "m:backup"), btn("🗑 এক দিন মোছা", "m:clear")],
+        [btn("⏻ PC বন্ধ", "m:shutdown"), btn("🔄 রিস্টার্ট", "m:restart")],
+        [btn("🛑 বন্ধ বাতিল", "m:abort"), btn("♻️ সব রিসেট", "m:reset")],
+    ]}
+
+
+def screen_keyboard() -> dict:
+    """Sub-menu for /screen: white / black / lift the overlay."""
+    def btn(text, data):
+        return {"text": text, "callback_data": data}
+
+    return {"inline_keyboard": [
+        [btn("⬜ সাদা করো", "m:screen_white"),
+         btn("⬛ কালো করো", "m:screen_black")],
+        [btn("🔓 খুলে দাও", "m:screen_off"),
+         btn("🔙 মেনু", "m:menu")],
     ]}
 
 
@@ -1700,6 +1737,8 @@ class TelegramBot:
             return self._do_explorer_hide(str(args.get("path", "")))
         if action == "explorer_unhide":
             return self._do_explorer_unhide(int(args.get("hid", 0)))
+        if action == "explorer_delete":
+            return self._do_explorer_delete(str(args.get("path", "")))
         return "⌛ অচেনা অপেক্ষমাণ কাজ — বাতিল করা হয়েছে।"
 
     def _run_pending_no(self, token: str | None = None,
@@ -1818,25 +1857,53 @@ class TelegramBot:
     def _explorer_state(self) -> dict:
         """The owner's browsing state: current folder, page, selected
         file, and a copy/move destination-picking mode. Kept in
-        kv_state so a restart does not lose the place."""
+        kv_state so a restart does not lose the place. "await" is a
+        question the explorer asked (rename / new folder / search) —
+        the owner's next message is its answer."""
         raw = self.db.get_state("telegram_explorer") if self.db else ""
         try:
             state = json.loads(raw) if raw else {}
         except Exception:
             state = {}
+        await_ = state.get("await") or {}
+        if not isinstance(await_, dict):
+            await_ = {}
         return {"cwd": str(state.get("cwd") or ""),
                 "page": int(state.get("page") or 0),
                 "sel": str(state.get("sel") or ""),
                 "mode": str(state.get("mode") or ""),
                 "src": str(state.get("src") or ""),
                 "msg": int(state.get("msg") or 0),
-                "last": str(state.get("last") or "")}
+                "last": str(state.get("last") or ""),
+                "await": {"kind": str(await_.get("kind") or ""),
+                          "path": str(await_.get("path") or "")},
+                "hpage": int(state.get("hpage") or 0),
+                "hmsg": int(state.get("hmsg") or 0)}
 
     def _save_explorer_state(self, state: dict) -> None:
         try:
             self.db.set_state("telegram_explorer", json.dumps(state))
         except Exception:
             pass
+
+    def _clear_explorer_await(self) -> None:
+        """Drop a pending explorer question (rename / new folder /
+        search) — the owner moved on to something else."""
+        state = self._explorer_state()
+        if state.get("await", {}).get("kind"):
+            state["await"] = {}
+            self._save_explorer_state(state)
+
+    def _explorer_cancel_await(self) -> bool:
+        """Cancel a pending explorer question. True when one was live."""
+        if self.file_explorer is None:
+            return False
+        state = self._explorer_state()
+        if not state.get("await", {}).get("kind"):
+            return False
+        state["await"] = {}
+        self._save_explorer_state(state)
+        return True
 
     def _explorer_listing(self, state: dict) -> dict:
         """The page of entries the buttons on screen refer to."""
@@ -1852,6 +1919,8 @@ class TelegramBot:
         capped at 64 bytes — full paths never travel in a button)."""
         from .file_explorer import _fmt_size as _ex_size
         from .file_explorer import _fmt_time as _ex_time
+        from .file_explorer import dir_size as _ex_dir_size
+        from .file_explorer import drive_free as _ex_free
 
         ex = self.file_explorer
         rows: list[list[dict]] = []
@@ -1865,7 +1934,9 @@ class TelegramBot:
             if not roots:
                 lines.append("  (কোনো ড্রাইভ পাওয়া যায়নি।)")
             for i, root in enumerate(roots):
-                rows.append([btn(f"💾 {root}", f"x:drv:{i}")])
+                free = _ex_free(root) if ex is not None else ""
+                label = f"💾 {root}" + (f" ({free} খালি)" if free else "")
+                rows.append([btn(label, f"x:drv:{i}")])
             rows.append([btn("❓ সাহায্য", "m:help")])
             return "\n".join(lines), {"inline_keyboard": rows}
 
@@ -1882,7 +1953,8 @@ class TelegramBot:
         for i, e in enumerate(entries):
             if e["is_dir"]:
                 lines.append(f"  📁 {e['name']}/")
-                rows.append([btn(f"📁 {e['name'][:40]}", f"x:o:{i}")])
+                rows.append([btn(f"📁 {e['name'][:40]}", f"x:o:{i}"),
+                             btn("⚙️", f"x:fsel:{i}")])
             else:
                 size = f" ({_ex_size(e['size'])})" if e["size"] is not None else ""
                 lines.append(f"  📄 {e['name']}{size}")
@@ -1899,14 +1971,44 @@ class TelegramBot:
             rows.insert(0, [btn(f"📍 এখানেই {verb} করো", "x:dst")])
             rows.append([btn("✖️ বাতিল", "x:back")])
         elif state["sel"]:
+            from pathlib import Path as _Path
+
+            sel_p = _Path(state["sel"])
             name = state["sel"].replace("\\", "/").split("/")[-1]
             lines.append("")
             lines.append(f"📄 বেছে নেওয়া: {name}")
-            rows.append([btn("📥 টেলিগ্রামে পাঠাও", "x:act:send"),
-                         btn("📋 কপি", "x:act:copy")])
+            try:
+                if sel_p.is_dir():
+                    size, done = _ex_dir_size(sel_p)
+                    try:
+                        count = len(list(sel_p.iterdir()))
+                    except Exception:
+                        count = 0
+                    lines.append(f"   📁 ফোল্ডার — {_ex_size(size)}"
+                                 f"{'±' if not done else ''}, {count}টি আইটেম")
+                elif sel_p.is_file():
+                    st = sel_p.stat()
+                    lines.append(f"   📄 {_ex_size(st.st_size)} — "
+                                 f"{_ex_time(st.st_mtime)}")
+                else:
+                    lines.append("   (এটা আর নেই — হয়তো মুছে গেছে।)")
+            except Exception:
+                lines.append("   (তথ্য পাওয়া যায়নি।)")
+            lines.append(f"   {state['sel']}")
+            if sel_p.is_dir():
+                rows.append([btn("📥 জিপ করে পাঠাও", "x:act:send"),
+                             btn("📋 কপি", "x:act:copy")])
+            else:
+                rows.append([btn("📥 টেলিগ্রামে পাঠাও", "x:act:send"),
+                             btn("📋 কপি", "x:act:copy")])
             rows.append([btn("➡️ মুভ", "x:act:move"),
                          btn("👁️ হাইড", "x:act:hide")])
+            rows.append([btn("✏️ নাম বদলাও", "x:act:rename"),
+                         btn("🗑️ মুছে ফেলো", "x:act:delete")])
             rows.append([btn("🔙 ফিরে যাও", "x:back")])
+        else:
+            rows.append([btn("📁 নতুন ফোল্ডার", "x:mkdir"),
+                         btn("🔎 খুঁজুন", "x:search")])
         nav: list[dict] = []
         if page > 0:
             nav.append(btn("⬅️ আগের", f"x:pg:{page - 1}"))
@@ -1950,15 +2052,23 @@ class TelegramBot:
             self.show_explorer()
             return
         from pathlib import Path as _Path
+        from .file_explorer import norm_root
 
-        target = _Path(path)
+        target = _Path(norm_root(path))
+        if target.is_file():
+            # A file path opens its folder and selects the file.
+            state.update(cwd=str(target.parent), page=0, sel=str(target),
+                         mode="", src="")
+            self._save_explorer_state(state)
+            self.show_explorer()
+            return
         if not target.is_dir():
             self.send("📂 এই ফোল্ডারটা পাওয়া যায়নি।")
             return
         roots = [str(r) for r in
                  (self.file_explorer.settings.get("allowed_roots") or [])]
         if roots:
-            norm = str(target).lower().replace("\\", "/")
+            norm = str(target).lower().replace("\\", "/").rstrip("/")
             ok = any(norm == str(r).lower().replace("\\", "/").rstrip("/")
                      or norm.startswith(str(r).lower().replace("\\", "/").rstrip("/") + "/")
                      for r in roots)
@@ -1975,6 +2085,12 @@ class TelegramBot:
         if self.file_explorer is None:
             self.send("📂 ফাইল এক্সপ্লোরার এই PC-তে চালু নেই।")
             return
+        # A tap is a new action: drop any stale pending confirmation
+        # first (v12.11 audit — the same class as the v12.3 bug: an
+        # old hide/copy confirm could later fire from an unrelated
+        # "হ্যাঁ"). The confirm buttons are a different prefix, so
+        # they are never affected.
+        self._clear_pending()
         state = self._explorer_state()
         parts = data.split(":")
         kind = parts[0] if parts else ""
@@ -1990,21 +2106,46 @@ class TelegramBot:
             self._save_explorer_state(state)
             self.show_explorer()
             return
-        if kind in ("o", "f"):
+        if kind in ("o", "f", "fsel"):
             listing = self._explorer_listing(state)
             try:
                 entry = (listing.get("entries") or [])[int(arg)]
             except Exception:
                 self.send("📂 এটা আর নেই — ফোল্ডারটা আবার খুলুন।")
                 return
-            if entry["is_dir"]:
+            if kind == "o" and entry["is_dir"]:
                 state.update(cwd=entry["path"], page=0, sel="")
                 self._save_explorer_state(state)
                 self.show_explorer()
             else:
+                if state.get("mode") in ("copy", "move"):
+                    # Choosing a destination: folders open, nothing
+                    # can be selected until the mode ends.
+                    self.send("📍 গন্তব্য ফোল্ডার বেছে নিন — ফোল্ডার খুলতে "
+                              "পারবেন, কিন্তু এখন কিছু বেছে নেওয়া যাবে না।")
+                    return
                 state["sel"] = entry["path"]
                 self._save_explorer_state(state)
                 self.show_explorer()
+            return
+        if kind == "mkdir":
+            state["await"] = {"kind": "mkdir", "path": state["cwd"]}
+            self._save_explorer_state(state)
+            self.send("📁 নতুন ফোল্ডারের নাম লিখুন "
+                      "(বাতিল করতে 'বাতিল' লিখুন):")
+            return
+        if kind == "search":
+            state["await"] = {"kind": "search", "path": state["cwd"]}
+            self._save_explorer_state(state)
+            self.send("🔎 কী খুঁজব? শব্দ লিখুন "
+                      "(বাতিল করতে 'বাতিল' লিখুন):")
+            return
+        if kind == "hp":
+            try:
+                page = max(0, int(arg))
+            except ValueError:
+                page = 0
+            self._send_hidden_buttons(page, refresh=True)
             return
         if kind == "pg":
             try:
@@ -2060,6 +2201,29 @@ class TelegramBot:
         from pathlib import Path as _Path
 
         if action == "send":
+            sel_p = _Path(sel)
+            if sel_p.is_dir():
+                from .file_explorer import zip_dir
+
+                ok, msg, zip_path = zip_dir(
+                    sel, self.file_explorer.max_send_bytes)
+                if not ok:
+                    self.send(f"📥 {msg}")
+                    return
+                name = sel_p.name + ".zip"
+                sent = False
+                try:
+                    sent = send_document(self.token, self.chat_id, zip_path,
+                                         f"📥 DeskAudit — {name}")
+                finally:
+                    import os as _os
+                    import shutil as _shutil
+
+                    _shutil.rmtree(_os.path.dirname(zip_path),
+                                   ignore_errors=True)
+                self.send(f"📥 পাঠানো হয়েছে: {name}" if sent
+                          else "📥 পাঠানো যায়নি — নেটওয়ার্ক/টোকেন দেখুন।")
+                return
             try:
                 size = _Path(sel).stat().st_size
             except Exception:
@@ -2079,8 +2243,8 @@ class TelegramBot:
             return
         if action in ("copy", "move"):
             verb = "কপি" if action == "copy" else "মুভ"
-            if not _Path(sel).is_file():
-                self.send("📄 ফাইলটা আর নেই — হয়তো মুছে গেছে বা সরানো হয়েছে।")
+            if not _Path(sel).exists():
+                self.send("📄 এটা আর নেই — হয়তো মুছে গেছে বা সরানো হয়েছে।")
                 return
             state["mode"] = action
             state["src"] = sel
@@ -2092,12 +2256,142 @@ class TelegramBot:
             return
         if action == "hide":
             name = sel.replace("\\", "/").split("/")[-1]
-            self._ask_confirm(f"👁️ {name} হাইড করব? ফাইলটা তার জায়গা "
+            self._ask_confirm(f"👁️ {name} হাইড করব? এটা তার জায়গা "
                               "থেকে গায়েব হয়ে যাবে — শুধু আপনিই /hidden "
                               "থেকে ফিরিয়ে আনতে পারবেন।",
                               "explorer_hide", {"path": sel})
             return
+        if action == "rename":
+            name = sel.replace("\\", "/").split("/")[-1]
+            state["await"] = {"kind": "rename", "path": sel}
+            self._save_explorer_state(state)
+            self.send(f"✏️ নতুন নাম লিখুন: {name} "
+                      "(বাতিল করতে 'বাতিল' লিখুন)")
+            return
+        if action == "delete":
+            name = sel.replace("\\", "/").split("/")[-1]
+            self._ask_confirm(f"🗑️ {name} মুছে ফেলব? ফাইল/ফোল্ডারটা "
+                              "সুরক্ষায় (quarantine) রাখা হবে — /deleted "
+                              "থেকে ফেরানো যাবে, আর সেখানে হ্যাঁ চাপলে "
+                              "তবেই চিরতরে মুছবে।",
+                              "explorer_delete", {"path": sel})
+            return
         self.send("❓ এই কাজটা চিনলাম না। /help লিখুন।")
+
+    def _explorer_await(self, text: str) -> bool:
+        """Handle a reply the explorer asked for: a new name, a new
+        folder name, or a search word. Returns True when the text
+        was consumed as the answer."""
+        if self.file_explorer is None:
+            return False
+        state = self._explorer_state()
+        await_ = state.get("await") or {}
+        kind = await_.get("kind", "")
+        if not kind:
+            return False
+        target = await_.get("path") or ""
+        if kind == "rename":
+            from pathlib import Path as _Path
+            from .file_explorer import valid_name
+
+            ok, err = valid_name(text)
+            if not ok:
+                self.send(f"✏️ {err} আবার লিখুন (বাতিল করতে 'বাতিল' লিখুন)।")
+                return True
+            src = _Path(target)
+            if not src.exists():
+                state["await"] = {}
+                self._save_explorer_state(state)
+                self.send("✏️ এটা আর নেই — হয়তো মুছে গেছে বা সরানো হয়েছে।")
+                return True
+            dest = src.parent / text.strip()
+            if dest.exists():
+                self.send(f"✏️ {text.strip()} নামে এখানে আগেই কিছু আছে — "
+                          "অন্য নাম লিখুন (বাতিল করতে 'বাতিল' লিখুন)।")
+                return True
+            try:
+                import shutil as _shutil
+
+                _shutil.move(str(src), str(dest))
+            except Exception as exc:
+                state["await"] = {}
+                self._save_explorer_state(state)
+                self.send(f"✏️ নাম বদলানো যায়নি: {exc}")
+                return True
+            state["await"] = {}
+            state["sel"] = str(dest)
+            self._save_explorer_state(state)
+            self.send(f"✏️ নাম বদলানো হয়েছে: {src.name} → {dest.name}")
+            self.show_explorer()
+            return True
+        if kind == "mkdir":
+            from pathlib import Path as _Path
+            from .file_explorer import valid_name
+
+            ok, err = valid_name(text)
+            if not ok:
+                self.send(f"📁 {err} আবার লিখুন (বাতিল করতে 'বাতিল' লিখুন)।")
+                return True
+            folder = _Path(target) / text.strip()
+            if folder.exists():
+                self.send(f"📁 {text.strip()} নামে এখানে আগেই কিছু আছে — "
+                          "অন্য নাম লিখুন (বাতিল করতে 'বাতিল' লিখুন)।")
+                return True
+            try:
+                folder.mkdir(parents=False)
+            except Exception as exc:
+                state["await"] = {}
+                self._save_explorer_state(state)
+                self.send(f"📁 ফোল্ডার বানানো যায়নি: {exc}")
+                return True
+            state["await"] = {}
+            self._save_explorer_state(state)
+            self.send(f"📁 ফোল্ডার বানানো হয়েছে: {text.strip()}")
+            self.show_explorer()
+            return True
+        if kind == "search":
+            import os as _os
+            from pathlib import Path as _Path
+
+            word = text.strip().lower()
+            if not word:
+                self.send("🔎 শব্দটা খালি — আবার লিখুন "
+                          "(বাতিল করতে 'বাতিল' লিখুন)।")
+                return True
+            base = _Path(target) if target else _Path(state.get("cwd") or "")
+            found: list[str] = []
+            scanned = 0
+            try:
+                for root, dirs, files in _os.walk(base):
+                    for name in dirs + files:
+                        scanned += 1
+                        if scanned > 500:
+                            break
+                        if word in name.lower():
+                            found.append(str(_Path(root) / name))
+                            if len(found) >= 20:
+                                break
+                    if scanned > 500 or len(found) >= 20:
+                        break
+            except Exception:
+                pass
+            state["await"] = {}
+            self._save_explorer_state(state)
+            if not found:
+                self.send(f"🔎 '{text.strip()}' — {base} এর ভেতরে কিছু "
+                          "পাওয়া যায়নি।")
+                return True
+            lines = [f"🔎 '{text.strip()}' — {len(found)}টি পাওয়া গেছে:"]
+            for f in found:
+                mark = "📁" if _Path(f).is_dir() else "📄"
+                lines.append(f"  {mark} {f}")
+            if len(found) >= 20:
+                lines.append("  (প্রথম ২০টি দেখানো হলো।)")
+            self.send_long("\n".join(lines))
+            return True
+        state["await"] = {}
+        self._save_explorer_state(state)
+        return True
 
     def _explorer_choose_dest(self, state: dict) -> None:
         mode = state.get("mode") or ""
@@ -2108,25 +2402,48 @@ class TelegramBot:
             return
         verb = "কপি" if mode == "copy" else "মুভ"
         name = src.replace("\\", "/").split("/")[-1]
-        self._ask_confirm(f"📍 {name} — {verb} করব এই ফোল্ডারে?\n{dest}",
+        detail = ""
+        try:
+            from pathlib import Path as _Path
+            from .file_explorer import _fmt_size as _ex_size
+            from .file_explorer import dir_size as _ex_dir_size
+
+            if _Path(src).is_dir():
+                size, done = _ex_dir_size(src)
+                detail = f" (ফোল্ডার, মোট {_ex_size(size)}{'±' if not done else ''})"
+        except Exception:
+            detail = ""
+        self._ask_confirm(f"📍 {name}{detail} — {verb} করব এই ফোল্ডারে?\n{dest}",
                           f"explorer_{mode}", {"src": src, "dest": dest})
 
     def _do_explorer_copy(self, src: str, dest: str) -> str:
-        from .file_explorer import copy_file
+        from pathlib import Path as _Path
 
-        ok, msg, _target = copy_file(src, dest)
+        from .file_explorer import copy_dir, copy_file
+
+        if _Path(src).is_dir():
+            ok, msg, _target = copy_dir(src, dest)
+        else:
+            ok, msg, _target = copy_file(src, dest)
         state = self._explorer_state()
         state.update(mode="", src="", sel="")
         self._save_explorer_state(state)
+        self.show_explorer()
         return msg if ok else f"📋 {msg}"
 
     def _do_explorer_move(self, src: str, dest: str) -> str:
-        from .file_explorer import move_file
+        from pathlib import Path as _Path
 
-        ok, msg, _target = move_file(src, dest)
+        from .file_explorer import move_dir, move_file
+
+        if _Path(src).is_dir():
+            ok, msg, _target = move_dir(src, dest)
+        else:
+            ok, msg, _target = move_file(src, dest)
         state = self._explorer_state()
         state.update(mode="", src="", sel="")
         self._save_explorer_state(state)
+        self.show_explorer()
         return msg if ok else f"➡️ {msg}"
 
     def _do_explorer_hide(self, path: str) -> str:
@@ -2139,34 +2456,83 @@ class TelegramBot:
         state = self._explorer_state()
         state.update(sel="", mode="", src="")
         self._save_explorer_state(state)
+        self.show_explorer()
+        return msg
+
+    def _do_explorer_delete(self, path: str) -> str:
+        """Delete from the explorer: into the delete-protect
+        quarantine, so /deleted can restore it (v12.11)."""
+        if self.delete_protector is None:
+            return "🗑️ ডিলিট সুরক্ষা এই PC-তে চালু নেই।"
+        try:
+            _ok, msg = self.delete_protector.quarantine_user(path)
+        except Exception as exc:
+            return f"🗑️ মুছে ফেলা যায়নি: {exc}"
+        state = self._explorer_state()
+        state.update(sel="", mode="", src="")
+        self._save_explorer_state(state)
+        self.show_explorer()
         return msg
 
     def _do_explorer_unhide(self, hid: int) -> str:
         if self.file_explorer is None:
             return "📂 ফাইল এক্সপ্লোরার এই PC-তে চালু নেই।"
         try:
-            return self.file_explorer.unhide(int(hid))
+            msg = self.file_explorer.unhide(int(hid))
         except Exception as exc:
             return f"🫥 ফেরানো যায়নি: {exc}"
+        if msg.startswith("↩️"):
+            state = self._explorer_state()
+            self._send_hidden_buttons(state.get("hpage", 0), refresh=True)
+        return msg
 
     def send_hidden_list(self) -> None:
-        """The /hidden list, with a 'ফিরিয়ে দাও' button per file."""
+        """The /hidden list, with a 'ফিরিয়ে দাও' button per file,
+        10 per page."""
         from .utils import today_str
 
         self.send_long(build_hidden_text(self.db, today_str()))
-        held = []
+        self._send_hidden_buttons(0, refresh=False)
+
+    def _send_hidden_buttons(self, page: int, refresh: bool) -> None:
+        """The restore buttons for one /hidden page. When refresh is
+        True, the existing buttons message is edited in place (pager
+        taps, or after a restore); otherwise a fresh one is sent."""
         try:
-            held = self.db.hidden_held(limit=10)
+            held = self.db.hidden_held(limit=200)
         except Exception:
             held = []
-        if held:
-            rows = []
-            for row in held:
-                name = (row["file_name"] or "?")[:40]
-                rows.append([{"text": f"↩️ {name} — ফিরিয়ে দাও",
-                              "callback_data": f"x:uh:{row['id']}"}])
-            self.send_markup("👇 ফিরিয়ে দিতে চাইলে বোতাম চাপুন:",
-                             {"inline_keyboard": rows})
+        pages = max(1, (len(held) + 9) // 10)
+        page = max(0, min(int(page), pages - 1))
+        rows: list[list[dict]] = []
+        for row in held[page * 10:(page + 1) * 10]:
+            name = (row["file_name"] or "?")[:40]
+            rows.append([{"text": f"↩️ {name} — ফিরিয়ে দাও",
+                          "callback_data": f"x:uh:{row['id']}"}])
+        nav: list[dict] = []
+        if page > 0:
+            nav.append({"text": "⬅️ আগের", "callback_data": f"x:hp:{page - 1}"})
+        if page + 1 < pages:
+            nav.append({"text": "পরের ➡️", "callback_data": f"x:hp:{page + 1}"})
+        if nav:
+            rows.append(nav)
+        if not held:
+            return
+        text = (f"👇 ফিরিয়ে দিতে চাইলে বোতাম চাপুন — "
+                f"পাতা {page + 1}/{pages}:")
+        markup = {"inline_keyboard": rows}
+        state = self._explorer_state()
+        state["hpage"] = page
+        if refresh and state.get("hmsg") \
+                and self.edit_markup(state["hmsg"], text, markup):
+            self._save_explorer_state(state)
+            return
+        if refresh and not state.get("hmsg"):
+            return  # the list was never shown — nothing to refresh
+        msg_id = self.send_markup_id(text, markup)
+        if msg_id:
+            state["hmsg"] = msg_id
+            self._save_explorer_state(state)
 
     # -- command routing ---------------------------------------------------
     def handle_text(self, text: str) -> None:
@@ -2178,6 +2544,21 @@ class TelegramBot:
         if not text:
             return
         low = text.lower()
+        # An answer the explorer asked for (a new name, a new folder
+        # name, or a search word). A "/" command always wins (it
+        # clears the wait below); a live confirmation wins over the
+        # wait too.
+        if not text.startswith("/"):
+            if low in self._CANCEL_WORDS and self._get_pending() is None:
+                if self._explorer_cancel_await():
+                    self.send("❌ বাতিল করা হয়েছে।")
+                    self.show_explorer()
+                    return
+            elif (low not in self._CONFIRM_WORDS
+                    and low not in self._CANCEL_WORDS
+                    and self._get_pending() is None):
+                if self._explorer_await(text):
+                    return
         if low in self._CONFIRM_WORDS:
             self.send(self._run_pending())
             return
@@ -2202,12 +2583,17 @@ class TelegramBot:
         # never cleared by its own arrival.
         if cmd.startswith("/"):
             self._clear_pending()
+            self._clear_explorer_await()
         day = today_str()
         if cmd in ("/start", "/help"):
             self.send(HELP_TEXT)
         elif cmd == "/menu":
-            self.send_markup("📋 DeskAudit মেনু — চাপলেই কাজ হবে:",
-                             menu_keyboard())
+            self.send_markup(
+                "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
+                "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
+                "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
+                "এক চাপে কিছু মুছবে না।)",
+                menu_keyboard())
         elif cmd == "/status":
             self.send_status(day)
         elif cmd == "/today":
@@ -2402,16 +2788,72 @@ class TelegramBot:
                 self.send_long(build_alerts_text(self.db, day))
             elif cmd == "files":
                 self.send_long(build_files_text(self.db, day))
+            elif cmd == "search":
+                # Needs a word — the button only opens the question.
+                self.send("🔎 কী খুঁজব? /search <শব্দ> লিখুন — যেমন /search রিপোর্ট")
             elif cmd == "report":
                 self.send_report(day)
             elif cmd == "shot":
                 self.send_screenshot()
             elif cmd == "browser":
                 self.send_long(build_browser_text(self.db, day))
+            elif cmd == "screen":
+                self.send_markup("⬜ স্ক্রিন কী করব?", screen_keyboard())
+            elif cmd == "screen_white":
+                self.send(self.set_screen("white"))
+            elif cmd == "screen_black":
+                self.send(self.set_screen("black"))
+            elif cmd == "screen_off":
+                self.send(self.set_screen("off"))
+            elif cmd == "lock":
+                self.send(self.lock_pc())
+            elif cmd == "close":
+                self.send("❌ কোন অ্যাপ বন্ধ করব? /close <অ্যাপ> লিখুন — "
+                          "যেমন /close chrome")
+            elif cmd == "freeze":
+                self.send("🧊 কোন অ্যাপ স্থগিত রাখব? /freeze <অ্যাপ> লিখুন — "
+                          "যেমন /freeze chrome (আবার চালু করতে /unfreeze <অ্যাপ>)")
             elif cmd == "pause":
                 self.send(self.pause_audit())
             elif cmd == "resume":
                 self.send(self.resume_audit())
+            elif cmd == "mute":
+                # One tap = quiet for 60 minutes (reversible with /unmute).
+                self.send(self.mute(60))
+            elif cmd == "unmute":
+                self.send(self.unmute())
+            elif cmd == "digest":
+                current = self.settings.get("digest_minutes", 60)
+                state = "বন্ধ" if not current else f"প্রতি {current} মিনিটে"
+                self.send(f"🕐 ডাইজেস্ট এখন {state} আসে। বদলাতে: "
+                          "/digest 30 অথবা /digest off লিখুন।")
+            elif cmd == "goal":
+                self.send("🎯 কোন প্রজেক্টের লক্ষ্য বদলাব? "
+                          "/goal <প্রজেক্ট> <মিনিট> লিখুন — যেমন /goal Office 240")
+            elif cmd == "backup":
+                self.send(self.backup_now())
+            elif cmd == "clear":
+                self.send("🗑 কোন দিনের ডেটা মুছব? /clear <তারিখ> লিখুন — "
+                          "যেমন /clear 2026-11-24 (আজকের জন্য শুধু /clear)")
+            elif cmd == "shutdown":
+                # Only asks — the owner still confirms with ✅ first.
+                self.request_shutdown(restart=False)
+            elif cmd == "restart":
+                self.request_shutdown(restart=True)
+            elif cmd == "abort":
+                self.send(self.abort_shutdown())
+            elif cmd == "reset":
+                # Only asks — the owner still confirms with ✅ first.
+                self.request_reset()
+            elif cmd == "menu":
+                self.send_markup(
+                    "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
+                    "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
+                    "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
+                    "এক চাপে কিছু মুছবে না।)",
+                    menu_keyboard())
+            elif cmd == "noop":
+                pass  # a section label — nothing to do
             elif cmd == "help":
                 self.send(HELP_TEXT)
             else:

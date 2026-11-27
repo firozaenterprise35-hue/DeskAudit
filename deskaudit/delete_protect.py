@@ -134,8 +134,14 @@ def is_temp_path(path: str, quarantine_root: str = "",
 
 
 def list_drives() -> list[str]:
-    """Drive letters with a root, e.g. ['C:', 'D:']. Windows only
-    in practice; elsewhere just the filesystem root."""
+    """Drive roots, e.g. ['C:\\\\', 'D:\\\\']. Windows only in
+    practice; elsewhere just the filesystem root.
+
+    The trailing backslash matters (v12.11 audit): on real Windows,
+    plain "C:" is NOT the root — it is the process's current
+    directory on drive C, so browsing/copying through "C:" lands in
+    the wrong place and Path("C:").parent is ".". "C:\\\\" is the
+    real root, and its parent is itself."""
     if sys.platform != "win32":
         return ["/"]
     try:
@@ -146,12 +152,12 @@ def list_drives() -> list[str]:
         drives = []
         for chunk in buf.value.split("\x00"):
             if len(chunk) >= 2 and chunk[1] == ":":
-                drives.append(chunk[:2])
+                drives.append(chunk[:2] + "\\")
         if drives:
             return drives
     except Exception:
         pass
-    return [f"{letter}:" for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"
+    return [f"{letter}:\\" for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"
             if os.path.isdir(f"{letter}:\\")]
 
 
@@ -200,7 +206,12 @@ class DeleteProtector:
     def quarantine_root(self) -> Path:
         raw = str(self.settings.get("quarantine_path") or "").strip()
         if raw:
-            return Path(os.path.expandvars(os.path.expanduser(raw)))
+            p = Path(os.path.expandvars(os.path.expanduser(raw)))
+            if not p.is_absolute():
+                # A relative path means "inside the install folder",
+                # not "inside wherever the process happened to start".
+                p = self.project_root / p
+            return p
         return self.project_root / "data" / "quarantine"
 
     @property
@@ -285,6 +296,39 @@ class DeleteProtector:
             except Exception as exc:
                 self.log.warning("Delete-protect notify failed: %s", exc)
         return item
+
+    def quarantine_user(self, path: str | Path) -> tuple[bool, str]:
+        """Quarantine one file or folder the owner deleted from the
+        Telegram explorer (v12.11). Same quarantine + the same
+        হ্যাঁ/না Telegram message as a Recycle Bin delete, so the
+        file/folder can be restored from /deleted. System paths and
+        the quarantine folder itself are refused."""
+        from .file_explorer import dir_size, is_system_path
+
+        target = Path(path)
+        if not target.exists():
+            return False, "এটা আর নেই — হয়তো মুছে গেছে বা সরানো হয়েছে।"
+        if is_system_path(target):
+            return False, "সিস্টেম ফোল্ডারের কিছু মুছে ফেলা যাবে না।"
+        try:
+            if os.path.commonpath([target.resolve(), self.held_dir.resolve()]) \
+                    == str(self.held_dir.resolve()):
+                return False, "এটা ইতিমধ্যে সুরক্ষায় লুকিয়ে আছে।"
+        except Exception:
+            pass
+        if target.is_dir():
+            size, _done = dir_size(target)
+        else:
+            try:
+                size = target.stat().st_size
+            except Exception:
+                size = 0
+        item = self._quarantine(target, target.name, str(target), size,
+                                "telegram", None)
+        if item is None:
+            return False, "মুছে ফেলা যায়নি — অনুমতি নেই বা ডিস্কের সমস্যা।"
+        return True, (f"🗑️ মুছে ফেলা হয়েছে (সুরক্ষায় রাখা আছে): "
+                      f"{target.name} — ফেরাতে /deleted দেখুন।")
 
     # -- Recycle Bin ----------------------------------------------------
     def scan_recycle_bins(self, bins: list[Path] | None = None) -> list[dict]:

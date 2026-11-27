@@ -8,11 +8,11 @@
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "12.9"
+!define APP_VERSION "12.11"
 ; Numeric quad for the PE version resource (VIProductVersion needs
 ; exactly X.X.X.X — APP_VERSION alternates between 2 and 3 parts,
 ; so keep the quad separate and update it with the version).
-!define APP_VERSION_NUM "12.9.0.0"
+!define APP_VERSION_NUM "12.11.0.0"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
