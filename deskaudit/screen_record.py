@@ -27,6 +27,7 @@ How a video is made (no new dependency):
 
 from __future__ import annotations
 
+import ctypes
 import shutil
 import struct
 import subprocess
@@ -51,6 +52,134 @@ MAX_CONSECUTIVE_FAILURES = 3
 
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _TO_BN_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+
+
+# ---------------------------------------------------------------------------
+# Native GDI / GDI+ signatures (v12.14.3 — the access-violation fix)
+#
+# Without argtypes/restype ctypes assumes every function returns a
+# 32-bit int and passes Python ints as 32-bit values. That was wrong
+# for two things here, and it is the reason recording crashed on
+# Firoza's real PC while every test on this machine passed:
+#
+#   * The GDI+ token is a ULONG_PTR — 8 bytes on 64-bit Windows.
+#     The old code kept it in a 4-byte c_ulong, so GdiplusStartup
+#     wrote 8 bytes into a 4-byte buffer and corrupted the heap;
+#     the next GDI+ call then died with
+#     "access violation reading 0x000002046D4A1F28". Wine returns a
+#     fake 32-bit token (0xDEADBEEF), which is why the bug never
+#     showed up in any test here.
+#   * HDC / HBITMAP / GpImage* handles are pointer-sized. Passing
+#     them as plain ints truncates them to 32 bits on 64-bit Windows.
+#
+# So every native call below goes through _bind_native(), which
+# declares the real signatures once. The token is _TOKEN_TYPE —
+# c_void_p, pointer-sized on every platform, never c_ulong.
+# ---------------------------------------------------------------------------
+
+_TOKEN_TYPE = ctypes.c_void_p  # ULONG_PTR — pointer-sized, never c_ulong
+
+
+class GdiplusStartupInput(ctypes.Structure):
+    _fields_ = [("GdiplusVersion", ctypes.c_uint32),
+                ("DebugEventCallback", ctypes.c_void_p),
+                ("SuppressBackgroundThread", ctypes.c_int),
+                ("SuppressExternalCodecs", ctypes.c_int)]
+
+
+class ImageCodecInfo(ctypes.Structure):
+    _fields_ = [("Clsid", ctypes.c_ubyte * 16),
+                ("FormatID", ctypes.c_ubyte * 16),
+                ("CodecName", ctypes.c_void_p),
+                ("DllName", ctypes.c_void_p),
+                ("FormatDescription", ctypes.c_void_p),
+                ("FilenameExtension", ctypes.c_void_p),
+                ("MimeType", ctypes.c_void_p),
+                ("Flags", ctypes.c_uint32),
+                ("Version", ctypes.c_uint32),
+                ("SigCount", ctypes.c_uint32),
+                ("SigSize", ctypes.c_uint32),
+                ("SigPattern", ctypes.c_void_p),
+                ("SigMask", ctypes.c_void_p)]
+
+
+class EncoderParameter(ctypes.Structure):
+    # NOTE: ULONG on Windows is always 4 bytes — use c_uint32, never
+    # c_ulong, which is 8 bytes on Linux (LP64) and would change the
+    # struct layout on this machine vs Windows.
+    _fields_ = [("Guid", ctypes.c_ubyte * 16),
+                ("NumberOfValues", ctypes.c_uint32),
+                ("Type", ctypes.c_uint32),
+                ("Value", ctypes.c_void_p)]
+
+
+class EncoderParameters(ctypes.Structure):
+    _fields_ = [("Count", ctypes.c_uint),
+                ("Parameter", EncoderParameter * 1)]
+
+
+_NATIVE_BOUND = False
+
+
+def _bind_native() -> None:
+    """Declare the ctypes signatures for the GDI / GDI+ calls used
+    to capture a frame. Idempotent; a no-op off Windows (there is no
+    windll there). Must run before any of those calls."""
+    global _NATIVE_BOUND
+    if _NATIVE_BOUND or sys.platform != "win32":
+        return
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    gdiplus = ctypes.windll.gdiplus
+    _P = ctypes.c_void_p
+    _I = ctypes.c_int
+    _U = ctypes.c_uint
+    user32.GetSystemMetrics.argtypes = [_I]
+    user32.GetSystemMetrics.restype = _I
+    user32.GetDC.argtypes = [_P]
+    user32.GetDC.restype = _P
+    user32.ReleaseDC.argtypes = [_P, _P]
+    user32.ReleaseDC.restype = _I
+    gdi32.CreateCompatibleDC.argtypes = [_P]
+    gdi32.CreateCompatibleDC.restype = _P
+    gdi32.CreateCompatibleBitmap.argtypes = [_P, _I, _I]
+    gdi32.CreateCompatibleBitmap.restype = _P
+    gdi32.SelectObject.argtypes = [_P, _P]
+    gdi32.SelectObject.restype = _P
+    gdi32.BitBlt.argtypes = [_P, _I, _I, _I, _I, _P, _I, _I, _U]
+    gdi32.BitBlt.restype = _I
+    gdi32.DeleteObject.argtypes = [_P]
+    gdi32.DeleteObject.restype = _I
+    gdi32.DeleteDC.argtypes = [_P]
+    gdi32.DeleteDC.restype = _I
+    gdiplus.GdiplusStartup.argtypes = [ctypes.POINTER(_TOKEN_TYPE),
+                                       ctypes.POINTER(GdiplusStartupInput),
+                                       _P]
+    gdiplus.GdiplusStartup.restype = _I
+    gdiplus.GdiplusShutdown.argtypes = [_TOKEN_TYPE]
+    gdiplus.GdiplusShutdown.restype = None
+    gdiplus.GdipCreateBitmapFromHBITMAP.argtypes = [_P, _P,
+                                                    ctypes.POINTER(_P)]
+    gdiplus.GdipCreateBitmapFromHBITMAP.restype = _I
+    gdiplus.GdipCreateBitmapFromScan0.argtypes = [_I, _I, _I, _I, _P,
+                                                 ctypes.POINTER(_P)]
+    gdiplus.GdipCreateBitmapFromScan0.restype = _I
+    gdiplus.GdipGetImageGraphicsContext.argtypes = [_P, ctypes.POINTER(_P)]
+    gdiplus.GdipGetImageGraphicsContext.restype = _I
+    gdiplus.GdipDrawImageRectI.argtypes = [_P, _P, _I, _I, _I, _I]
+    gdiplus.GdipDrawImageRectI.restype = _I
+    gdiplus.GdipDeleteGraphics.argtypes = [_P]
+    gdiplus.GdipDeleteGraphics.restype = _I
+    gdiplus.GdipSaveImageToFile.argtypes = [_P, ctypes.c_wchar_p, _P, _P]
+    gdiplus.GdipSaveImageToFile.restype = _I
+    gdiplus.GdipGetImageEncodersSize.argtypes = [ctypes.POINTER(_U),
+                                                ctypes.POINTER(_U)]
+    gdiplus.GdipGetImageEncodersSize.restype = _I
+    gdiplus.GdipGetImageEncoders.argtypes = [_U, _U, _P]
+    gdiplus.GdipGetImageEncoders.restype = _I
+    gdiplus.GdipDisposeImage.argtypes = [_P]
+    gdiplus.GdipDisposeImage.restype = _I
+    _NATIVE_BOUND = True
 
 
 def validate_minutes(value) -> int:
@@ -136,7 +265,7 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
     frame takes well under a second. Raises RuntimeError otherwise."""
     if sys.platform != "win32":
         raise RuntimeError("screen recording works on Windows only")
-    import ctypes
+    _bind_native()
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +286,11 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
         raise RuntimeError("could not open the screen device")
     hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
     hbm = gdi32.CreateCompatibleBitmap(hdc_screen, w, h)
-    token = ctypes.c_ulong(0)
+    # v12.14.3: the token MUST be pointer-sized. The old code used
+    # ctypes.c_ulong (4 bytes); GdiplusStartup writes an 8-byte
+    # ULONG_PTR into it on 64-bit Windows, corrupting the heap and
+    # crashing the next GDI+ call with an access violation.
+    token = _TOKEN_TYPE(0)
     bitmap = ctypes.c_void_p(0)
     scaled = ctypes.c_void_p(0)
     try:
@@ -166,12 +299,6 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
         gdi32.SelectObject(hdc_mem, hbm)
         if not gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, x0, y0, SRCCOPY):
             raise RuntimeError("screen copy failed")
-
-        class GdiplusStartupInput(ctypes.Structure):
-            _fields_ = [("GdiplusVersion", ctypes.c_uint32),
-                        ("DebugEventCallback", ctypes.c_void_p),
-                        ("SuppressBackgroundThread", ctypes.c_int),
-                        ("SuppressExternalCodecs", ctypes.c_int)]
 
         inp = GdiplusStartupInput(1, None, 0, 0)
         if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(inp), None) != 0:
@@ -200,9 +327,11 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
             clsid = _jpeg_encoder_clsid(gdiplus)
             if clsid is None:
                 raise RuntimeError("no JPEG encoder on this PC")
+            # Keep the 16 CLSID bytes in a live buffer for the call.
+            clsid_buf = (ctypes.c_ubyte * 16).from_buffer_copy(clsid)
             params = _quality_params(quality)
             status = gdiplus.GdipSaveImageToFile(
-                save_bitmap, str(out), clsid,
+                save_bitmap, str(out), ctypes.byref(clsid_buf),
                 ctypes.byref(params) if params is not None else None)
             if status != 0:
                 raise RuntimeError(f"GDI+ could not save the JPEG (status {status})")
@@ -223,29 +352,13 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
 
 def _jpeg_encoder_clsid(gdiplus):
     """The CLSID of the image/jpeg encoder, or None."""
-    import ctypes
-
+    _bind_native()
     num = ctypes.c_uint(0)
     size = ctypes.c_uint(0)
     gdiplus.GdipGetImageEncodersSize(ctypes.byref(num), ctypes.byref(size))
     if not size.value:
         return None
     buf = ctypes.create_string_buffer(size.value)
-
-    class ImageCodecInfo(ctypes.Structure):
-        _fields_ = [("Clsid", ctypes.c_ubyte * 16),
-                    ("FormatID", ctypes.c_ubyte * 16),
-                    ("CodecName", ctypes.c_void_p),
-                    ("DllName", ctypes.c_void_p),
-                    ("FormatDescription", ctypes.c_void_p),
-                    ("FilenameExtension", ctypes.c_void_p),
-                    ("MimeType", ctypes.c_void_p),
-                    ("Flags", ctypes.c_uint32),
-                    ("Version", ctypes.c_uint32),
-                    ("SigCount", ctypes.c_uint32),
-                    ("SigSize", ctypes.c_uint32),
-                    ("SigPattern", ctypes.c_void_p),
-                    ("SigMask", ctypes.c_void_p)]
 
     gdiplus.GdipGetImageEncoders(num, size, buf)
     for i in range(num.value):
@@ -261,20 +374,10 @@ def _quality_params(quality: int):
     """EncoderParameters for JPEG quality (1–100), or None to use the
     encoder default. The quality GUID is {1D5BE4B5-FA4A-452D-9CDD-
     5DB35105E7EB}; value type 4 is a 32-bit long."""
-    import ctypes
-
-    class EncoderParameter(ctypes.Structure):
-        _fields_ = [("Guid", ctypes.c_ubyte * 16),
-                    ("NumberOfValues", ctypes.c_ulong),
-                    ("Type", ctypes.c_ulong),
-                    ("Value", ctypes.c_void_p)]
-
-    class EncoderParameters(ctypes.Structure):
-        _fields_ = [("Count", ctypes.c_uint),
-                    ("Parameter", EncoderParameter * 1)]
-
     guid_bytes = bytes.fromhex("B5E45B1D4AFA2D459CDD5DB35105E7EB")
-    value = ctypes.c_ulong(max(1, min(100, quality)))
+    # The quality value is a 32-bit long (type 4) — c_uint32, not
+    # c_ulong, for the same platform-width reason as above.
+    value = ctypes.c_uint32(max(1, min(100, quality)))
     params = EncoderParameters()
     params.Count = 1
     params.Parameter[0].Guid = (ctypes.c_ubyte * 16).from_buffer_copy(guid_bytes)

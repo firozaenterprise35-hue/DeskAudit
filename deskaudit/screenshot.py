@@ -19,6 +19,50 @@ import sys
 import zlib
 from pathlib import Path
 
+# v12.14.3: the GDI calls below used to run with no ctypes
+# signatures, so every HDC/HBITMAP came back truncated to 32 bits.
+# GDI handles happen to be small values, so /screenshot worked —
+# but the sibling recorder crashed on real Windows for the same
+# missing-signatures reason (its GDI+ token is 8 bytes, not 4).
+# Declare the real signatures once; cheap insurance, same fix.
+_NATIVE_BOUND = False
+
+
+def _bind_native() -> None:
+    """Declare the ctypes signatures for the GDI calls. Idempotent;
+    a no-op off Windows (there is no windll there)."""
+    global _NATIVE_BOUND
+    if _NATIVE_BOUND or sys.platform != "win32":
+        return
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    _P = ctypes.c_void_p
+    _I = ctypes.c_int
+    _U = ctypes.c_uint
+    user32.GetSystemMetrics.argtypes = [_I]
+    user32.GetSystemMetrics.restype = _I
+    user32.GetDC.argtypes = [_P]
+    user32.GetDC.restype = _P
+    user32.ReleaseDC.argtypes = [_P, _P]
+    user32.ReleaseDC.restype = _I
+    gdi32.CreateCompatibleDC.argtypes = [_P]
+    gdi32.CreateCompatibleDC.restype = _P
+    gdi32.CreateCompatibleBitmap.argtypes = [_P, _I, _I]
+    gdi32.CreateCompatibleBitmap.restype = _P
+    gdi32.SelectObject.argtypes = [_P, _P]
+    gdi32.SelectObject.restype = _P
+    gdi32.BitBlt.argtypes = [_P, _I, _I, _I, _I, _P, _I, _I, _U]
+    gdi32.BitBlt.restype = _I
+    gdi32.GetDIBits.argtypes = [_P, _P, _U, _U, _P, _P, _U]
+    gdi32.GetDIBits.restype = _I
+    gdi32.DeleteObject.argtypes = [_P]
+    gdi32.DeleteObject.restype = _I
+    gdi32.DeleteDC.argtypes = [_P]
+    gdi32.DeleteDC.restype = _I
+    _NATIVE_BOUND = True
+
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
@@ -54,6 +98,7 @@ def _capture_bgra() -> tuple[int, int, bytes]:
     Windows only; raises RuntimeError otherwise or on failure."""
     if sys.platform != "win32":
         raise RuntimeError("screenshot works on Windows only")
+    _bind_native()
     import ctypes
 
     user32 = ctypes.windll.user32

@@ -100,9 +100,23 @@ def test_hosts_block_unblock():
     print("hosts block/unblock passed")
 
 
+def test_bind_native_noop_on_linux():
+    """v12.14.3: declaring the native GDI signatures must be a
+    harmless no-op off Windows (there is no windll there)."""
+    import sys
+
+    from deskaudit import screenshot as shot
+
+    if sys.platform != "win32":
+        shot._bind_native()
+        assert shot._NATIVE_BOUND is False
+    print("bind native noop on linux passed")
+
+
 if __name__ == "__main__":
     test_encode_png_roundtrip()
     test_capture_windows_only()
     test_screen_blank_windows_only()
     test_hosts_block_unblock()
+    test_bind_native_noop_on_linux()
     print("ALL SCREENSHOT TESTS PASSED")

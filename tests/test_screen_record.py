@@ -293,6 +293,57 @@ def test_screen_locked_reason_none_on_linux():
     print("screen locked reason none on linux passed")
 
 
+def test_native_struct_sizes():
+    """v12.14.3: the GDI+ structs must match the native layout —
+    EncoderParameter 32 bytes, EncoderParameters 40, StartupInput
+    24, ImageCodecInfo 104. A wrong size means GDI+ reads garbage
+    (the same class of bug as the token crash)."""
+    import ctypes
+
+    from deskaudit.screen_record import (
+        EncoderParameter,
+        EncoderParameters,
+        GdiplusStartupInput,
+        ImageCodecInfo,
+    )
+
+    assert ctypes.sizeof(EncoderParameter) == 32
+    assert ctypes.sizeof(EncoderParameters) == 40
+    assert ctypes.sizeof(GdiplusStartupInput) == 24
+    assert ctypes.sizeof(ImageCodecInfo) == 104
+    print("native struct sizes passed")
+
+
+def test_token_is_pointer_sized():
+    """v12.14.3 regression test for the access violation:
+    the GDI+ token is a ULONG_PTR, so its type must be
+    pointer-sized (c_void_p) — never c_ulong. The old 4-byte
+    c_ulong let GdiplusStartup write 8 bytes into it on 64-bit
+    Windows, corrupting the heap and crashing the next GDI+ call
+    with 'access violation reading 0x...'. Wine returns a fake
+    32-bit token, so the bug never showed up in tests here."""
+    import ctypes
+
+    from deskaudit.screen_record import _TOKEN_TYPE
+
+    assert _TOKEN_TYPE is ctypes.c_void_p
+    assert ctypes.sizeof(_TOKEN_TYPE) == ctypes.sizeof(ctypes.c_void_p)
+    print("token is pointer sized passed")
+
+
+def test_bind_native_noop_on_linux():
+    """v12.14.3: declaring the native signatures must be a harmless
+    no-op off Windows (there is no windll there)."""
+    import sys
+
+    from deskaudit import screen_record as sr
+
+    if sys.platform != "win32":
+        sr._bind_native()
+        assert sr._NATIVE_BOUND is False
+    print("bind native noop on linux passed")
+
+
 if __name__ == "__main__":
     test_validate_minutes()
     test_frame_interval_seconds()
@@ -305,4 +356,7 @@ if __name__ == "__main__":
     test_recorder_transient_failure_recovers()
     test_recorder_encode_failure_still_reports()
     test_screen_locked_reason_none_on_linux()
+    test_native_struct_sizes()
+    test_token_is_pointer_sized()
+    test_bind_native_noop_on_linux()
     print("ALL SCREEN RECORD TESTS PASSED")
