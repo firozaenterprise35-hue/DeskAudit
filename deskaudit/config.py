@@ -98,6 +98,7 @@ class Config:
     telegram: dict = field(default_factory=dict)
     email: dict = field(default_factory=dict)
     app_watch: dict = field(default_factory=dict)
+    delete_protect: dict = field(default_factory=dict)
     project_root: Path = Path(".")
 
     @classmethod
@@ -155,6 +156,11 @@ class Config:
         from .app_watch import DEFAULT_APP_WATCH
 
         app_watch = {**DEFAULT_APP_WATCH, **(merged.get("app_watch", {}) or {})}
+        # Delete protection: same pattern.
+        from .delete_protect import DEFAULT_DELETE_PROTECT
+
+        delete_protect = {**DEFAULT_DELETE_PROTECT,
+                          **(merged.get("delete_protect", {}) or {})}
         return cls(
             poll_interval_seconds=_coerce_int(merged.get("poll_interval_seconds", 5), 5),
             idle_threshold_seconds=_coerce_int(merged.get("idle_threshold_seconds", 300), 300),
@@ -195,6 +201,7 @@ class Config:
             telegram=telegram,
             email=email,
             app_watch=app_watch,
+            delete_protect=delete_protect,
             project_root=root,
         )
 

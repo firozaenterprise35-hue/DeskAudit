@@ -188,6 +188,31 @@ app_watch:
   cooldown_minutes: 10
   max_per_tick: 5
 
+# Delete protection (v12.8): a deleted file looks deleted to the user,
+# but its content is moved to a hidden quarantine folder instead of
+# being lost. Telegram asks the owner per file: হ্যাঁ = delete for
+# good, না = restore to the exact original place.
+# - Normal Explorer deletes land in the Recycle Bin on every drive, so
+#   they are quarantined from there (all files, all drives).
+# - Shift+Delete skips the bin, so protected folders (Desktop,
+#   Documents, sensitive folders, + protected_folders below) keep a
+#   live mirror copy — a permanent delete there can still be undone.
+# - A permanent delete OUTSIDE the protected folders can only be
+#   logged, not undone (the content is gone before the agent sees it).
+# - quarantine_path: "" = <install folder>/data/quarantine. Set it to
+#   another (empty) drive, e.g. "E:/DeskAudit-Quarantine".
+# - TEMP / %TEMP% files, browser caches and DeskAudit's own data are
+#   never protected. Held files are never auto-purged — only the
+#   owner's হ্যাঁ deletes them.
+delete_protect:
+  enabled: true
+  quarantine_path: ""
+  poll_seconds: 30
+  mirror_max_mb: 500
+  quarantine_max_gb: 10
+  mirror_retention_days: 30
+  protected_folders: []
+
 # --- Hourly email digest ----------------------------------------------
 # One digest email every interval_minutes to your own address (SMTP).
 # Gmail route: 2-Step Verification on, then an App Password for

@@ -665,6 +665,59 @@ def build_transfers_text(db, day: str) -> str:
     return "\n".join(lines)
 
 
+def build_delete_text(item: dict) -> str:
+    """One deleted file, quarantined: what it was, where it was, when
+    it was deleted, and where it is hidden now (v12.8)."""
+    when = _hhmm(item.get("deleted_at", "") or "")
+    size = f" ({_fmt_size(item.get('size_bytes'))})" if item.get("size_bytes") else ""
+    where = "Recycle Bin থেকে" if item.get("source") == "recycle_bin" \
+        else "সুরক্ষিত ফোল্ডার থেকে (Shift+Delete হলেও)"
+    folder = (item.get("original_path", "") or "").replace("\\", "/")
+    folder = folder[:folder.rfind("/")] if "/" in folder else folder
+    lines = [
+        "🗑️ একটি ফাইল ডিলিট করা হয়েছে — কিন্তু মুছে যায়নি",
+        f"📄 {item.get('file_name', '?')}{size}",
+        f"📁 ছিল: {folder or '?'}",
+        f"🕐 {when} — {where}",
+        "👁️ এখন লুকিয়ে রাখা আছে (কোয়ারেন্টাইনে)। ইউজারের চোখে এটা ডিলিট হয়ে গেছে।",
+        "",
+        "পারমেনেন্টলি ডিলিট করব, নাকি আগের জায়গায় ফিরিয়ে দেব?",
+    ]
+    return "\n".join(lines)
+
+
+def build_deleted_text(db, day: str | None = None) -> str:
+    """Files currently held in quarantine (/deleted)."""
+    from .utils import today_str
+
+    day = day or today_str()
+    try:
+        held = db.quarantined_held(limit=20)
+        today_rows = db.quarantined_for_date(day, limit=20)
+    except Exception:
+        held, today_rows = [], []
+    lines = ["🗑️ মুছে যাওয়া ফাইল — সুরক্ষায় আছে", ""]
+    if not held:
+        lines.append("  (এখন কোনো ফাইল সুরক্ষায় নেই।)")
+    else:
+        lines.append(f"এখন সুরক্ষায়: {len(held)}টি")
+        for row in held:
+            size = f" ({_fmt_size(row['size_bytes'])})" if row["size_bytes"] else ""
+            lines.append(f"  • #{row['id']} {_hhmm(row['deleted_at'])} "
+                         f"{row['file_name']}{size}")
+            lines.append(f"    ছিল: {(row['original_path'] or '').replace(chr(92), '/')}")
+    decided = [r for r in today_rows if r["status"] != "held"]
+    if decided:
+        lines.append("")
+        lines.append("আজ সিদ্ধান্ত হয়েছে:")
+        for row in decided[:10]:
+            verb = "পারমেনেন্টলি মোছা" if row["status"] == "purged" else "ফিরিয়ে দেওয়া"
+            lines.append(f"  • #{row['id']} {row['file_name']} — {verb}")
+    lines.append("")
+    lines.append("হ্যাঁ/না চাপতে হয় ফাইলটি ডিলিট হওয়ার মেসেজের বোতামে।")
+    return "\n".join(lines)
+
+
 def build_alerts_text(db, day: str) -> str:
     """Today's alerts with severity + time (/alerts)."""
     try:
@@ -831,6 +884,7 @@ HELP_TEXT = (
     "🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze — আবার চালু\n"
     "⏻ /shutdown | /restart — PC বন্ধ/রিস্টার্ট (নিশ্চিতকরণ লাগবে) | /abort — বাতিল\n"
     "🗑 /clear [তারিখ] — এক দিনের ডেটা মোছা (নিশ্চিতকরণ লাগবে)\n"
+    "🗑 /deleted — ডিলিট হওয়া ফাইল, যা সুরক্ষায় লুকিয়ে আছে\n"
     "♻️ /reset — সব ডেটা মুছে নতুন শুরু, আগে ব্যাকআপ নেবে\n"
     "💾 /backup — এখনই ব্যাকআপ নেওয়া\n"
     "🎯 /goal <প্রজেক্ট> <মিনিট> — দৈনিক লক্ষ্য বদলানো\n"
@@ -851,7 +905,8 @@ def menu_keyboard() -> dict:
         [btn("🎯 প্রজেক্ট", "m:projects"), btn("🔒 ট্রান্সফার", "m:transfers")],
         [btn("📁 ফাইল", "m:files"), btn("⚠️ অ্যালার্ট", "m:alerts")],
         [btn("📄 রিপোর্ট", "m:report"), btn("⏸ বিরতি", "m:pause")],
-        [btn("▶️ আবার চালু", "m:resume"), btn("❓ সাহায্য", "m:help")],
+        [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("▶️ আবার চালু", "m:resume")],
+        [btn("❓ সাহায্য", "m:help")],
     ]}
 
 
@@ -978,7 +1033,7 @@ class TelegramBot:
 
     def __init__(self, db, settings: dict | None, log=None,
                  project_root=None, config_path=None, projects_path=None,
-                 tagger=None, reports_dir=None):
+                 tagger=None, reports_dir=None, delete_protector=None):
         self.db = db
         self.settings = {**DEFAULT_TELEGRAM, **(settings or {})}
         self.log = log or _log
@@ -986,6 +1041,7 @@ class TelegramBot:
         self.config_path = Path(config_path) if config_path else None
         self.projects_path = Path(projects_path) if projects_path else None
         self.tagger = tagger
+        self.delete_protector = delete_protector
         self.reports_dir = (Path(reports_dir) if reports_dir else
                             (self.project_root / "reports"
                              if self.project_root else Path("reports")))
@@ -1566,7 +1622,28 @@ class TelegramBot:
             return self._do_shutdown(False)
         if action == "restart":
             return self._do_shutdown(True)
+        if action == "delete_protect":
+            # হ্যাঁ = the quarantined copy is deleted for good.
+            return self._do_delete_purge(int(args.get("qid", 0)))
         return "⌛ অচেনা অপেক্ষমাণ কাজ — বাতিল করা হয়েছে।"
+
+    def _run_pending_no(self, token: str | None = None,
+                        *, from_button: bool = False) -> str:
+        """The 'no' branch of a pending confirmation. For most actions
+        no means cancel — but for delete protection it means RESTORE
+        the file to its original place (v12.8)."""
+        pending = self._get_pending()
+        if not pending:
+            return "⌛ কোনো অপেক্ষমাণ কাজ নেই (অথবা সময় শেষ হয়ে গেছে)। আবার কমান্ড দিন।"
+        if from_button and pending.get("token") != token:
+            return "⌛ এই নিশ্চিতকরণটি আর কার্যকর নয় — আবার কমান্ড দিন।"
+        self._clear_pending()
+        action = pending.get("action", "")
+        args = pending.get("args", {}) or {}
+        if action == "delete_protect":
+            # না = do NOT delete — unhide and restore the file.
+            return self._do_delete_restore(int(args.get("qid", 0)))
+        return "❌ বাতিল করা হয়েছে।"
 
     # -- outbound --------------------------------------------------------
     def send_digest(self, day: str | None = None) -> bool:
@@ -1625,6 +1702,43 @@ class TelegramBot:
                 sent += 1
         return sent
 
+    # -- delete protection (v12.8) --------------------------------------
+    def notify_deleted(self, item: dict) -> bool:
+        """Immediate notice for one deleted file that was quarantined,
+        with the owner's choice: হ্যাঁ = purge for good, না = restore
+        to its original place. The buttons carry a one-time token, so
+        an old button can never decide a different file."""
+        if not item:
+            return False
+        qid = int(item.get("id") or 0)
+        if not qid:
+            return False
+        token = self._set_pending("delete_protect", {"qid": qid})
+        markup = {"inline_keyboard": [[
+            {"text": "✅ হ্যাঁ, ডিলিট করো", "callback_data": f"confirm:yes:{token}"},
+            {"text": "↩️ না, ফিরিয়ে দাও", "callback_data": f"confirm:no:{token}"},
+        ]]}
+        return self.send_markup(
+            build_delete_text(item) + "\n\n(৫ মিনিটের মধ্যে সিদ্ধান্ত নিন — "
+            "না জানালে ফাইলটা সুরক্ষায়ই থাকবে।)",
+            markup)
+
+    def _do_delete_purge(self, qid: int) -> str:
+        if self.delete_protector is None:
+            return "🗑 ডিলিট সুরক্ষা এই PC-তে চালু নেই।"
+        try:
+            return self.delete_protector.purge(qid)
+        except Exception as exc:
+            return f"🗑 মোছা যায়নি: {exc}"
+
+    def _do_delete_restore(self, qid: int) -> str:
+        if self.delete_protector is None:
+            return "🗑 ডিলিট সুরক্ষা এই PC-তে চালু নেই।"
+        try:
+            return self.delete_protector.restore(qid)
+        except Exception as exc:
+            return f"🗑 ফেরানো যায়নি: {exc}"
+
     # -- command routing ---------------------------------------------------
     def handle_text(self, text: str) -> None:
         """Answer one message from the owner. Unknown text gets the
@@ -1639,7 +1753,11 @@ class TelegramBot:
             self.send(self._run_pending())
             return
         if low in self._CANCEL_WORDS:
-            if self._get_pending():
+            pending = self._get_pending()
+            if pending is not None and pending.get("action") == "delete_protect":
+                # না on a deleted file means: do NOT delete — restore it.
+                self.send(self._run_pending_no())
+            elif pending:
                 self._clear_pending()
                 self.send("❌ বাতিল করা হয়েছে।")
             else:
@@ -1673,6 +1791,8 @@ class TelegramBot:
             self.send_long(build_projects_text(self.db, day))
         elif cmd == "/transfers":
             self.send_long(build_transfers_text(self.db, day))
+        elif cmd == "/deleted":
+            self.send_long(build_deleted_text(self.db, day))
         elif cmd == "/alerts":
             self.send_long(build_alerts_text(self.db, day))
         elif cmd == "/files":
@@ -1808,8 +1928,12 @@ class TelegramBot:
                 pending = self._get_pending()
                 if pending is not None and token is not None \
                         and pending.get("token") == token:
-                    self._clear_pending()
-                    self.send("❌ বাতিল করা হয়েছে।")
+                    if pending.get("action") == "delete_protect":
+                        # না on a deleted file = restore it, not cancel.
+                        self.send(self._run_pending_no(token, from_button=True))
+                    else:
+                        self._clear_pending()
+                        self.send("❌ বাতিল করা হয়েছে।")
                 else:
                     self.send("⌛ এই নিশ্চিতকরণটি আর কার্যকর নয় — আবার কমান্ড দিন।")
             else:
@@ -1831,6 +1955,8 @@ class TelegramBot:
                 self.send_long(build_projects_text(self.db, day))
             elif cmd == "transfers":
                 self.send_long(build_transfers_text(self.db, day))
+            elif cmd == "deleted":
+                self.send_long(build_deleted_text(self.db, day))
             elif cmd == "alerts":
                 self.send_long(build_alerts_text(self.db, day))
             elif cmd == "files":

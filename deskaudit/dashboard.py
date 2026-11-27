@@ -180,6 +180,7 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
         float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", [])
     )
     tsum = transfer_summary(db, day)
+    qsum = quarantined_summary(db, day)
     return {
         **summary,
         "hourly": hourly_activity(db, day),
@@ -188,6 +189,7 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
         "file_types": file_type_totals(db, day),
         "recent_files": recent_file_events(db, day),
         "transfers": tsum,
+        "quarantined": qsum,
         "kpis": {
             "active_seconds": summary["active_seconds"],
             "idle_seconds": summary["idle_seconds"],
@@ -208,7 +210,31 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
             "untagged_seconds": untagged_seconds,
             "transfers_total": tsum["total"],
             "usb_copies": tsum["counts"].get("usb_copy", {}).get("count", 0),
+            "quarantined_today": qsum["total"],
+            "quarantined_held": qsum["held"],
         },
+    }
+
+
+def quarantined_summary(db: Database, day: str) -> dict:
+    """Delete protection for one day: quarantined files + still held."""
+    try:
+        rows = db.quarantined_for_date(day, limit=50)
+        held = db.quarantined_held(limit=50)
+    except Exception:
+        rows, held = [], []
+    return {
+        "date": day,
+        "total": len(rows),
+        "held": len(held),
+        "rows": [{
+            "id": r["id"], "file": r["file_name"] or "",
+            "path": r["original_path"] or "",
+            "size_bytes": r["size_bytes"],
+            "source": r["source"] or "",
+            "status": r["status"] or "held",
+            "at": r["deleted_at"] or "",
+        } for r in rows],
     }
 
 
@@ -294,6 +320,10 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("telegram", "digest_minutes"): (0, 1440),  # 0 = digest off
     ("app_watch", "cooldown_minutes"): (1, 1440),
     ("app_watch", "max_per_tick"): (1, 20),
+    ("delete_protect", "poll_seconds"): (10, 600),
+    ("delete_protect", "mirror_max_mb"): (1, 100000),
+    ("delete_protect", "quarantine_max_gb"): (1, 1000),
+    ("delete_protect", "mirror_retention_days"): (1, 365),
     ("email", "smtp_port"): (1, 65535),
     ("email", "interval_minutes"): (5, 1440),
 }
@@ -316,12 +346,14 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("telegram", "notify_critical"),
     ("app_watch", "enabled"),
     ("app_watch", "notify_new_app"),
+    ("delete_protect", "enabled"),
     ("email", "enabled"),
     ("email", "use_tls"),
 }
 # List settings: the UI sends one comma-separated string, stored as a list.
 _LIST_SETTINGS: set[tuple[str, str]] = {
     ("transfers", "sensitive_folders"),
+    ("delete_protect", "protected_folders"),
 }
 _LLM_PROVIDERS = ("gemini", "openai", "anthropic")
 
@@ -377,6 +409,9 @@ def get_settings(config_path: str | Path) -> dict:
     from .app_watch import DEFAULT_APP_WATCH
 
     app_watch = {**DEFAULT_APP_WATCH, **(cfg.app_watch or {})}
+    from .delete_protect import DEFAULT_DELETE_PROTECT
+
+    delete_protect = {**DEFAULT_DELETE_PROTECT, **(cfg.delete_protect or {})}
     local_telegram = local.get("telegram") if isinstance(local.get("telegram"), dict) else {}
     local_email = local.get("email") if isinstance(local.get("email"), dict) else {}
     return {
@@ -449,6 +484,15 @@ def get_settings(config_path: str | Path) -> dict:
             "cooldown_minutes": int(app_watch.get("cooldown_minutes", 10)),
             "max_per_tick": int(app_watch.get("max_per_tick", 5)),
         },
+        "delete_protect": {
+            "enabled": bool(delete_protect.get("enabled", True)),
+            "quarantine_path": str(delete_protect.get("quarantine_path") or ""),
+            "poll_seconds": int(delete_protect.get("poll_seconds", 30)),
+            "mirror_max_mb": int(delete_protect.get("mirror_max_mb", 500)),
+            "quarantine_max_gb": int(delete_protect.get("quarantine_max_gb", 10)),
+            "mirror_retention_days": int(delete_protect.get("mirror_retention_days", 30)),
+            "protected_folders": [str(f) for f in (delete_protect.get("protected_folders") or [])],
+        },
         "email": {
             "enabled": bool(email.get("enabled", False)),
             "smtp_host": str(email.get("smtp_host") or "smtp.gmail.com"),
@@ -485,7 +529,7 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     errors: list[str] = []
     for section, values in updates.items():
         if section not in ("llm", "agent", "alerts", "backup", "secret_gate", "transfers",
-                           "telegram", "email"):
+                           "telegram", "email", "app_watch", "delete_protect"):
             continue
         if not isinstance(values, dict):
             errors.append(f"{section} must be an object")
@@ -549,6 +593,13 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
                     errors.append(f"email.{key} must be an email address")
                 else:
                     merged[key] = value.strip()
+            elif section == "delete_protect" and key == "quarantine_path":
+                if not isinstance(value, str):
+                    errors.append("delete_protect.quarantine_path must be a string")
+                elif len(value) > 260:
+                    errors.append("delete_protect.quarantine_path is too long")
+                else:
+                    merged[key] = value.strip()
             elif (section, key) in _LIST_SETTINGS:
                 # Comma-separated string from the UI -> list of folders.
                 if not isinstance(value, str):
@@ -579,11 +630,13 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     if not new_local:
         return get_settings(cfg_path)
     # File layout differs from the API grouping: llm/alerts/secret_gate/
-    # transfers/telegram/email/app_watch are nested dicts in the yaml, but
-    # agent/backup keys live at the top level (poll_interval_seconds, ...).
+    # transfers/telegram/email/app_watch/delete_protect are nested dicts
+    # in the yaml, but agent/backup keys live at the top level
+    # (poll_interval_seconds, ...).
     local = _read_local_raw(cfg_path)
     for section, values in new_local.items():
-        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email", "app_watch"):
+        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email", "app_watch",
+                       "delete_protect"):
             current = local.get(section)
             if not isinstance(current, dict):
                 current = {}
@@ -807,6 +860,15 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                 db = self._open_db()
                 try:
                     self._send_json(transfer_summary(db, day))
+                finally:
+                    db.close()
+                return
+
+            if parsed.path == "/api/quarantined":
+                day = _parse_date(get("date"))
+                db = self._open_db()
+                try:
+                    self._send_json(quarantined_summary(db, day))
                 finally:
                     db.close()
                 return

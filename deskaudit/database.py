@@ -149,6 +149,25 @@ CREATE TABLE IF NOT EXISTS transfers (
 );
 CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers(date);
 CREATE INDEX IF NOT EXISTS idx_transfers_type ON transfers(transfer_type);
+-- Delete protection (see delete_protect.py). A file the user deleted
+-- is MOVED here (hidden quarantine) instead of being lost: the row
+-- records where it came from, so হ্যাঁ purges it for good and না
+-- restores it to its original path. Held rows are never auto-purged.
+CREATE TABLE IF NOT EXISTS quarantined_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    file_name TEXT DEFAULT '',
+    original_path TEXT DEFAULT '',
+    quarantine_path TEXT DEFAULT '',
+    size_bytes INTEGER,
+    source TEXT DEFAULT '',   -- recycle_bin | mirror
+    status TEXT DEFAULT 'held',   -- held | restored | purged
+    deleted_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    decided_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_quarantined_date ON quarantined_files(date);
+CREATE INDEX IF NOT EXISTS idx_quarantined_status ON quarantined_files(status);
 -- Project indexes are created in _migrate_project_columns(), after the
 -- project/tags columns exist (fresh DBs get them there too).
 """
@@ -847,6 +866,59 @@ class Database:
             """SELECT * FROM transfers WHERE date = ?
                ORDER BY occurred_at DESC LIMIT ?""",
             (date, limit)).fetchall()
+
+    # -- delete protection (quarantine) --------------------------------
+    def log_quarantined(self, date: str, file_name: str, original_path: str,
+                        quarantine_path: str, size_bytes: int | None = None,
+                        source: str = "", deleted_at: str | None = None) -> int:
+        """Record a file moved to quarantine. Returns the row id."""
+        from datetime import datetime as _dt
+
+        when = deleted_at or _dt.now().isoformat(timespec="seconds")
+        cur = self.conn.execute(
+            """INSERT INTO quarantined_files
+               (date, file_name, original_path, quarantine_path, size_bytes,
+                source, status, deleted_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'held', ?, ?)""",
+            (date, file_name, original_path, quarantine_path, size_bytes,
+             source, when, _dt.now().isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def get_quarantined(self, qid: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM quarantined_files WHERE id = ?", (qid,)).fetchone()
+
+    def set_quarantine_status(self, qid: int, status: str) -> bool:
+        from datetime import datetime as _dt
+
+        cur = self.conn.execute(
+            """UPDATE quarantined_files SET status = ?, decided_at = ?
+               WHERE id = ? AND status = 'held'""",
+            (status, _dt.now().isoformat(timespec="seconds"), qid))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def quarantined_for_date(self, date: str, limit: int | None = 100) -> list[sqlite3.Row]:
+        if limit is None:
+            return self.conn.execute(
+                """SELECT * FROM quarantined_files WHERE date = ?
+                   ORDER BY deleted_at DESC""", (date,)).fetchall()
+        return self.conn.execute(
+            """SELECT * FROM quarantined_files WHERE date = ?
+               ORDER BY deleted_at DESC LIMIT ?""", (date, limit)).fetchall()
+
+    def quarantined_held(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM quarantined_files WHERE status = 'held'
+               ORDER BY deleted_at DESC LIMIT ?""", (limit,)).fetchall()
+
+    def quarantined_count(self, date: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM quarantined_files WHERE date = ?",
+            (date,)).fetchone()
+        return int(row["n"] or 0)
 
     def transfer_counts(self, date: str) -> dict[str, dict]:
         """{type: {"count": n, "bytes": total_size}} for one day."""

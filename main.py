@@ -148,6 +148,7 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     last_browser_poll = 0.0
     last_alert_check = 0.0
     last_transfer_scan = 0.0
+    last_delete_scan = 0.0
     last_telegram_poll = 0.0
     last_telegram_digest = 0.0
     last_email = 0.0
@@ -232,6 +233,23 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         except Exception as exc:  # the watch must never crash the agent
             log.warning("New-program watch did not start: %s", exc)
 
+    # Delete protection (v12.8): a deleted file is moved to a hidden
+    # quarantine (another drive, when configured) instead of being
+    # lost — the owner decides on Telegram (হ্যাঁ = purge, না = restore).
+    delete_protector = None
+    if (config.delete_protect or {}).get("enabled", True):
+        try:
+            from deskaudit.delete_protect import DeleteProtector
+
+            delete_protector = DeleteProtector(
+                db, config.delete_protect, log,
+                project_root=config.project_root,
+                protected_folders=config.effective_watch_folders())
+            log.info("Delete protection on: quarantine at %s.",
+                     delete_protector.quarantine_root)
+        except Exception as exc:  # protection must never crash the agent
+            log.warning("Delete protection did not start: %s", exc)
+
     # Telegram bot: outbound status/digests + critical alerts to the
     # owner's chat. Disabled until bot_token + chat_id are set.
     if (config.telegram or {}).get("enabled", False):
@@ -243,10 +261,13 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 project_root=config.project_root,
                 config_path=config.project_root / "config.yaml",
                 projects_path=config.project_root / "projects.yaml",
-                tagger=tagger)
+                tagger=tagger,
+                delete_protector=delete_protector)
             if telegram_bot.configured:
                 log.info("Telegram bot on: digests every %s min, commands polled.",
                          telegram_bot.settings.get("digest_minutes", 60))
+                if delete_protector is not None:
+                    delete_protector.notify = telegram_bot.notify_deleted
             else:
                 log.warning("Telegram enabled but bot_token/chat_id missing — "
                             "set them in Dashboard Settings -> Telegram.")
@@ -346,6 +367,23 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                         log.info("Transfers detected: %s", counts)
                 except Exception as exc:  # transfers must never crash the agent
                     log.warning("Transfer scan failed: %s", exc)
+            # Delete protection: Recycle Bins + protected-folder mirror.
+            if delete_protector is not None:
+                try:
+                    delete_poll = int((config.delete_protect or {}).get("poll_seconds", 30) or 30)
+                except (TypeError, ValueError):
+                    delete_poll = 30
+                delete_poll = max(delete_poll, 10)
+                if now_ts - last_delete_scan >= delete_poll:
+                    last_delete_scan = now_ts
+                    try:
+                        quarantined = delete_protector.scan()
+                        if quarantined:
+                            log.info("Delete protection: %s file(s) quarantined: %s",
+                                     len(quarantined),
+                                     ", ".join(i["file_name"] for i in quarantined))
+                    except Exception as exc:
+                        log.warning("Delete-protect scan failed: %s", exc)
             # Alerts: re-check every 30 minutes while the agent runs.
             if config.alerts.get("enabled", True) and now_ts - last_alert_check >= 1800:
                 last_alert_check = now_ts
@@ -587,6 +625,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Seconds for --screen-test (default 5)")
     parser.add_argument("--app-watch-test", action="store_true",
                         help="List currently running non-system programs with window titles (test only)")
+    parser.add_argument("--delete-protect-test", action="store_true",
+                        help="Scan Recycle Bins + protected folders once and quarantine fresh deletes (test only)")
+    parser.add_argument("--quarantine-list", action="store_true",
+                        help="List files currently held in quarantine")
     parser.add_argument("--email-test", action="store_true",
                         help="Send a test email to the configured address")
     parser.add_argument("--email-now", action="store_true",
@@ -917,6 +959,39 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(max(1, args.screen_seconds))
         stop_blank()
         print("Screen overlay stopped.")
+        return 0
+
+    if args.delete_protect_test:
+        from deskaudit.delete_protect import DeleteProtector
+
+        db = Database(config.db_path)
+        try:
+            protector = DeleteProtector(
+                db, config.delete_protect, log,
+                project_root=config.project_root,
+                protected_folders=config.effective_watch_folders())
+            found = protector.scan()
+        finally:
+            db.close()
+        print(f"Quarantine: {protector.quarantine_root}")
+        if not found:
+            print("No fresh deletes found (Recycle Bins + protected folders).")
+        for item in found:
+            print(f"  🗑 {item['file_name']} — was: {item['original_path']} "
+                  f"({item['source']}) -> held #{item['id']}")
+        return 0
+
+    if args.quarantine_list:
+        db = Database(config.db_path)
+        try:
+            rows = db.quarantined_held(limit=50)
+        finally:
+            db.close()
+        if not rows:
+            print("No files held in quarantine.")
+        for row in rows:
+            print(f"  #{row['id']} {row['file_name']} — was: {row['original_path']} "
+                  f"[{row['source']}, {row['deleted_at']}]")
         return 0
 
     if args.app_watch_test:

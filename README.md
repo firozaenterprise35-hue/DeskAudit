@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -391,6 +391,59 @@ asks to stop DeskAudit first and Retry, instead of failing mid-way.
 The uninstaller got the same check. No code change in the agent
 itself — only the installer script and the version number.
 
+**Delete protection (v12.8)** — the owner asked: when a user deletes
+any file (Desktop or drives D:/E:/F:/G:, however deleted, except
+TEMP/%TEMP%), it must *look* deleted to them, but actually be hidden —
+and the owner gets a Telegram message with the file's details and
+হ্যাঁ / না buttons. হ্যাঁ deletes it permanently; না unhides it and
+restores it to the exact same place.
+- A normal Explorer delete sends the file to the **Recycle Bin**, so
+  Windows itself preserves the content. The agent watches every
+  drive's `$Recycle.Bin` (it parses the `$I` metadata file for the
+  original path/size/time) and the moment a file lands there, it
+  **moves it to a hidden quarantine folder** — another (empty) drive
+  when one is configured in Settings (`delete_protect.quarantine_path`,
+  e.g. `E:/DeskAudit-Quarantine`; default is `data/quarantine`) — and
+  sends the Telegram message at once. The user sees the file as
+  deleted, and it is gone from the bin too.
+- **Shift+Delete skips the bin**, so protected folders (Desktop,
+  Documents, sensitive folders, + extra `protected_folders`) keep a
+  **live mirror copy** of every file (up to `mirror_max_mb`, 500 MB by
+  default, budgeted per scan). When such a file disappears, the mirror
+  copy is quarantined the same way. A rename is not mistaken for a
+  delete: the agent checks its own file-watcher `moved` events first.
+- **Honest limit:** a permanent delete *outside* the protected
+  folders cannot be undone — by the time the agent sees the delete
+  event, the content is already gone. Those deletes are only logged
+  (name, path, size, time). A user-mode Python agent cannot intercept
+  an arbitrary delete before it happens; that needs a kernel driver.
+  TEMP / %TEMP% files, browser caches, the bin itself, the quarantine
+  folder and DeskAudit's own data are never protected.
+- **The choice is the owner's, per file, with the v12.4 token-bound
+  confirmation:** the message carries ✅ হ্যাঁ, ডিলিট করো /
+  ↩️ না, ফিরিয়ে দাও buttons bound to that file's one-time token.
+  Typing হ্যাঁ purges the quarantine copy for good; typing না (or
+  tapping it) restores the file to its original folder — recreating
+  the folder if needed, and renaming with a timestamp if a new file
+  took its place. If the owner says nothing, the file simply stays
+  held: **held files are never auto-purged**. Only the mirror copies
+  are pruned (past `mirror_retention_days` or the `quarantine_max_gb`
+  mirror cap). A restore re-mirrors the file at once, so a second
+  delete right after a restore is protected too.
+- Dashboard: a **🗑️ মুছে যাওয়া ফাইল** section (recent quarantined
+  files + status), a 15th KPI card (Quarantined), `/api/quarantined`,
+  and a Settings block (quarantine folder, scan interval, mirror
+  size/cap/retention, extra protected folders). Telegram: `/deleted`
+  lists what is held, plus a menu button. CLI:
+  `--delete-protect-test` (one scan, prints what was quarantined)
+  and `--quarantine-list`.
+- **Bug caught by the new tests:** `save_settings` had a section
+  whitelist that never listed `app_watch` — so the new-program
+  settings from the dashboard had been silently dropped since v12.5
+  (the int/bool tables and the write path supported it; only the
+  gate dropped it). The whitelist now lists `app_watch` and
+  `delete_protect`.
+
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
@@ -479,6 +532,7 @@ DeskAudit/
 │   ├── transfers.py         # Data Transfer Monitor: USB / cloud / email / print / sensitive folders
 │   ├── telegram.py          # Telegram bot: status / digest / critical alerts, /status /today commands
 │   ├── app_watch.py         # Real-time new-program watch: baseline + new process alerts (v12.5)
+│   ├── delete_protect.py    # Delete protection: Recycle Bin watch + mirror + quarantine (v12.8)
 │   ├── screenshot.py        # Screen capture (ctypes BitBlt + stdlib PNG encoder, Windows only)
 │   ├── screen_blank.py      # Fullscreen white/black overlay window (Windows only)
 │   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
@@ -519,6 +573,7 @@ DeskAudit/
     ├── test_app_watch.py    # New-program watch + instant alerts (v12.5)
     ├── test_silent.py       # Silent child-process launches, no console flash (v12.5)
     ├── test_dashboard_lock.py  # Dashboard PIN lock (v12.6)
+    ├── test_delete_protect.py  # Recycle Bin + mirror + quarantine + Telegram হ্যাঁ/না (v12.8)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -546,7 +601,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.7.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.8.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -585,17 +640,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.7-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.8-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.7.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.8.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.7.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.8.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first
