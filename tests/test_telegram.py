@@ -302,6 +302,73 @@ def test_send_email_not_configured():
     print("send_email not configured passed")
 
 
+def test_send_photo_id_returns_message_id():
+    """v12.15: the live view needs the sent photo's message id so it
+    can edit that one message — send_photo_id returns it."""
+    import urllib.parse
+
+    from deskaudit.telegram import send_photo_id
+
+    bodies = []
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append((req.full_url, req.data))
+        return _FakeResp({"ok": True, "result": {"message_id": 42}})
+
+    old = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"fake-jpeg")
+            path = f.name
+        try:
+            assert send_photo_id("tok123", "999", path, caption="hi") == 42
+            assert send_photo_id("", "999", path) is None
+            assert send_photo_id("tok123", "", path) is None
+        finally:
+            os.unlink(path)
+    finally:
+        urllib.request.urlopen = old
+    assert bodies and "sendPhoto" in bodies[0][0], bodies
+    assert b"fake-jpeg" in bodies[0][1], bodies
+    print("send photo id returns message id passed")
+
+
+def test_edit_photo_posts_media():
+    """v12.15: editMessageMedia must carry the media JSON
+    (attach://photo) plus the file — the live view's refresh."""
+    import urllib.parse
+
+    from deskaudit.telegram import edit_photo
+
+    bodies = []
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append((req.full_url, req.data))
+        return _FakeResp({"ok": True, "result": True})
+
+    old = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"fake-jpeg")
+            path = f.name
+        try:
+            assert edit_photo("tok123", "999", 42, path, caption="live") is True
+            assert edit_photo("tok123", "999", 0, path) is False
+            assert edit_photo("", "999", 42, path) is False
+        finally:
+            os.unlink(path)
+    finally:
+        urllib.request.urlopen = old
+    assert bodies, "no request was made"
+    url, body = bodies[0]
+    assert "editMessageMedia" in url, url
+    assert b'"type": "photo"' in body and b"attach://photo" in body, body
+    assert b"fake-jpeg" in body, body
+    print("edit photo posts media passed")
+
+
 def test_send_email_failure():
     import smtplib
 
@@ -335,4 +402,6 @@ if __name__ == "__main__":
     test_send_email_mocked()
     test_send_email_not_configured()
     test_send_email_failure()
+    test_send_photo_id_returns_message_id()
+    test_edit_photo_posts_media()
     print("ALL TELEGRAM + EMAIL TESTS PASSED")

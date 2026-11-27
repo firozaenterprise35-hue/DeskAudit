@@ -171,6 +171,57 @@ def send_photo(token: str, chat_id: str, path: str | Path,
     return bool(result and result.get("ok"))
 
 
+def send_photo_id(token: str, chat_id: str, path: str | Path,
+                  caption: str = "", reply_markup: dict | None = None) -> int | None:
+    """Send a photo and return its message id (the live view edits
+    that one message instead of sending a new photo on every
+    refresh). None on any failure. Never raises."""
+    if not token or not chat_id:
+        return None
+    try:
+        data = Path(path).read_bytes()
+    except Exception as exc:
+        _log.warning("Telegram sendPhoto: cannot read %s: %s", path, exc)
+        return None
+    fields: dict = {"chat_id": chat_id, "caption": caption[:1024]}
+    if reply_markup is not None:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    result = _post_multipart(token, "sendPhoto", fields,
+                             "photo", Path(path).name, data)
+    if result and result.get("ok"):
+        try:
+            return int((result.get("result") or {}).get("message_id") or 0) or None
+        except Exception:
+            return None
+    return None
+
+
+def edit_photo(token: str, chat_id: str, message_id: int, path: str | Path,
+               caption: str = "", reply_markup: dict | None = None) -> bool:
+    """Replace the photo of a message the bot sent earlier
+    (editMessageMedia) — the live view refreshes one message in
+    place instead of sending a new photo every 10 seconds. The
+    caption and the stop button travel with the new photo. The
+    media field is a JSON string pointing at the attached file
+    (attach://photo). Never raises."""
+    if not token or not chat_id or not message_id:
+        return False
+    try:
+        data = Path(path).read_bytes()
+    except Exception as exc:
+        _log.warning("Telegram editMessageMedia: cannot read %s: %s", path, exc)
+        return False
+    media = {"type": "photo", "media": "attach://photo",
+             "caption": caption[:1024]}
+    fields: dict = {"chat_id": chat_id, "message_id": str(message_id),
+                    "media": json.dumps(media, ensure_ascii=False)}
+    if reply_markup is not None:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    result = _post_multipart(token, "editMessageMedia", fields,
+                             "photo", Path(path).name, data)
+    return bool(result and result.get("ok"))
+
+
 def send_video(token: str, chat_id: str, path: str | Path,
                caption: str = "") -> bool:
     """Send a local video as a Telegram video (e.g. a screen
@@ -932,6 +983,7 @@ HELP_TEXT = (
     "  /status /today /week /apps /projects /transfers /alerts /files\n"
     "  🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন> | /browser unblock <ডোমেইন>\n"
     "  📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
+    "  🔴 /live — লাইভ স্ক্রিন দেখা (এক মেসেজে ১০ সেকেন্ডে তাজা ছবি, ১০ মিনিট পর্যন্ত) | /live stop — থামানো\n"
     "  🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
     "  📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
     "  📂 /explore [ফোল্ডার] — ড্রাইভ/ফোল্ডার ঘুরে দেখা: ফাইল ও ফোল্ডার\n"
@@ -978,6 +1030,7 @@ def menu_keyboard() -> dict:
         [btn("📁 ফাইল", "m:files"), btn("⚠️ অ্যালার্ট", "m:alerts")],
         [btn("🔎 খোঁজা", "m:search"), btn("📄 রিপোর্ট", "m:report")],
         [btn("🌐 ব্রাউজার", "m:browser"), btn("📸 স্ক্রিনশট", "m:shot")],
+        [btn("🔴 লাইভ দেখা", "m:live")],
         [btn("📂 ফাইল ঘোরাঘুরি", "m:explore"), btn("🫥 লুকানো ফাইল", "m:hidden")],
         [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("❓ সাহায্য", "m:help")],
         # 🎛️ নিয়ন্ত্রণ — one tap, or a prompt for what is needed.
@@ -1019,6 +1072,16 @@ def record_keyboard() -> dict:
         [btn("15 মিনিট", "m:record_15"), btn("20 মিনিট", "m:record_20")],
         [btn("30 মিনিট", "m:record_30"), btn("📊 অবস্থা", "m:record_status")],
         [btn("⏹️ থামাও", "m:record_stop"), btn("🔙 মেনু", "m:menu")],
+    ]}
+
+
+def live_keyboard() -> dict:
+    """The one button under the live photo: stop the live view."""
+    def btn(text, data):
+        return {"text": text, "callback_data": data}
+
+    return {"inline_keyboard": [
+        [btn("⏹️ থামাও", "m:live_stop")],
     ]}
 
 
@@ -1157,6 +1220,7 @@ class TelegramBot:
         self.delete_protector = delete_protector
         self.file_explorer = file_explorer
         self._recorder = None  # created lazily: ScreenRecorder (v12.14)
+        self._live_viewer = None  # created lazily: LiveViewer (v12.15)
         self.reports_dir = (Path(reports_dir) if reports_dir else
                             (self.project_root / "reports"
                              if self.project_root else Path("reports")))
@@ -1214,6 +1278,30 @@ class TelegramBot:
         ok = send_document(self.token, self.chat_id, path, caption)
         if not ok:
             self.log.warning("Telegram sendDocument failed (check bot token / chat id).")
+        return ok
+
+    def send_photo_id(self, path: str | Path, caption: str = "",
+                      reply_markup: dict | None = None) -> int | None:
+        """Send a photo and return its message id (the live view
+        edits that one message). Never raises."""
+        if not self.configured:
+            return None
+        message_id = send_photo_id(self.token, self.chat_id, path,
+                                   caption, reply_markup)
+        if message_id is None:
+            self.log.warning("Telegram sendPhoto failed (check bot token / chat id).")
+        return message_id
+
+    def edit_photo(self, message_id: int, path: str | Path, caption: str = "",
+                   reply_markup: dict | None = None) -> bool:
+        """Swap a fresh photo into a message the bot sent earlier
+        (the live view's refresh). Never raises."""
+        if not self.configured:
+            return False
+        ok = edit_photo(self.token, self.chat_id, message_id, path,
+                        caption, reply_markup)
+        if not ok:
+            self.log.warning("Telegram editMessageMedia failed (check bot token / chat id).")
         return ok
 
     def send_markup(self, text: str, reply_markup: dict) -> bool:
@@ -1754,6 +1842,99 @@ class TelegramBot:
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    # -- live screen view (v12.15) ----------------------------------
+    @property
+    def live_viewer(self):
+        """The bot's LiveViewer, created on first use. None when the
+        agent's folder is unknown (no place to keep the frame)."""
+        if self._live_viewer is None and self.project_root is not None:
+            from .live_view import LiveViewer
+
+            self._live_viewer = LiveViewer(
+                self.project_root / "data" / "live",
+                log=self.log,
+                send_fn=self._live_send,
+                edit_fn=self._live_edit,
+                on_done=self._on_live_done,
+                reply_markup=live_keyboard())
+        return self._live_viewer
+
+    def _live_send(self, path, caption, reply_markup) -> int | None:
+        return self.send_photo_id(path, caption, reply_markup)
+
+    def _live_edit(self, message_id, path, caption, reply_markup) -> bool:
+        return self.edit_photo(message_id, path, caption, reply_markup)
+
+    def _on_live_done(self, reason: str, refreshes: int, last_error) -> None:
+        """Called (in the viewer thread) when a live view ends."""
+        if reason == "stopped":
+            self.send(f"⏹️ লাইভ দেখা থামানো হয়েছে — ছবি {refreshes} বার তাজা হয়েছে।")
+        elif reason == "time_up":
+            self.send("🔴 লাইভ দেখা শেষ হয়েছে (১০ মিনিট) — আবার দেখতে /live লিখুন।")
+        elif reason == "send_failed":
+            self.send("🔴 লাইভ ছবি পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
+        else:  # failed — captures kept failing (locked screen is usual)
+            err = f" ({last_error})" if last_error else ""
+            self.send(f"🔴 লাইভ দেখা বন্ধ হয়ে গেছে{err} — আবার চেষ্টা করতে /live লিখুন।")
+
+    def start_live(self) -> None:
+        """Start a live screen view in one Telegram message.
+
+        On demand only, and only to the owner's chat — like a
+        screenshot, a live view shows screen content, so it never
+        starts by itself."""
+        import sys
+
+        from .screen_record import screen_locked_reason
+
+        # v12.14.2: check BEFORE starting. On a locked screen every
+        # capture fails, and the view would only learn that after
+        # three failed refreshes.
+        locked = screen_locked_reason()
+        if locked:
+            self.send(locked)
+            return
+        if sys.platform != "win32":
+            self.send("🔴 লাইভ স্ক্রিন শুধু Windows PC-তে চলে।")
+            return
+        live = self.live_viewer
+        if live is None:
+            self.send("🔴 লাইভ দেখা যাচ্ছে না — এজেন্টের ফোল্ডার জানা নেই।")
+            return
+        ok, _msg = live.start()
+        if not ok:
+            self.live_status()
+
+    def stop_live(self) -> None:
+        """Stop the running live view early. The viewer thread sends
+        the closing message when it stops."""
+        live = self.live_viewer
+        if live is None:
+            self.send("🔴 এখন লাইভ দেখা চলছে না।")
+            return
+        ok, _msg = live.stop()
+        if not ok:
+            self.send("🔴 এখন লাইভ দেখা চলছে না।")
+
+    def live_status(self) -> None:
+        """Report whether a live view is running and how long is left."""
+        live = self.live_viewer
+        if live is None:
+            self.send("🔴 এখন লাইভ দেখা চলছে না।")
+            return
+        st = live.status()
+        if not st["running"]:
+            self.send("🔴 এখন লাইভ দেখা চলছে না — দেখতে /live লিখুন।")
+            return
+        left = st["seconds_left"]
+        err_note = ""
+        if st.get("last_error"):
+            err_note = (f" ⚠️ শেষ চেষ্টায় ছবি আসেনি "
+                        f"({st['last_error']})।")
+        self.send(f"🔴 লাইভ দেখা চলছে — ছবি {st['refreshes']} বার তাজা হয়েছে, "
+                  f"আরও {left // 60} মিনিট {left % 60:02d} সেকেন্ড বাকি।{err_note} "
+                  f"থামাতে /live stop লিখুন।")
 
     # -- browser control -------------------------------------------------
     _BROWSER_EXES = ["chrome.exe", "msedge.exe", "brave.exe",
@@ -2977,6 +3158,19 @@ class TelegramBot:
                 self.recording_status()
             else:
                 self.start_recording(args[0])
+        elif cmd == "/live":
+            if not args:
+                live = self.live_viewer
+                if live is not None and live.status()["running"]:
+                    self.live_status()
+                else:
+                    self.start_live()
+            elif args[0].lower() in ("stop", "থামাও"):
+                self.stop_live()
+            elif args[0].lower() in ("status", "অবস্থা"):
+                self.live_status()
+            else:
+                self.send("🔴 ব্যবহার: /live — দেখা শুরু | /live stop — থামানো | /live status — অবস্থা")
         elif cmd == "/shutdown":
             self.request_shutdown(restart=False)
         elif cmd == "/restart":
@@ -3139,6 +3333,10 @@ class TelegramBot:
                 self.send_report(day)
             elif cmd == "shot":
                 self.send_screenshot()
+            elif cmd == "live":
+                self.start_live()
+            elif cmd == "live_stop":
+                self.stop_live()
             elif cmd == "browser":
                 self.send_long(build_browser_text(self.db, day))
             elif cmd == "screen":

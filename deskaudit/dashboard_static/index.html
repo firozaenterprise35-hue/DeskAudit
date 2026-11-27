@@ -78,6 +78,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
 
   <section><h2>Today at a glance</h2><div id="glance" class="muted">Loading…</div></section>
 
+  <section><h2>🔴 লাইভ স্ক্রিন</h2>
+  <p><button id="liveStartBtn">▶️ লাইভ শুরু</button> <button id="liveStopBtn" disabled>⏹️ থামাও</button> <span id="liveStatus" class="muted">বন্ধ আছে — চালু করলে প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।</span></p>
+  <div id="liveWrap" style="display:none"><img id="liveImg" alt="লাইভ স্ক্রিন" style="max-width:100%;border:1px solid var(--border);border-radius:8px"><p class="muted" id="liveTime"></p></div>
+  <p class="muted">শুধু এই PC-র স্ক্রিন — Telegram-এ /live লিখলেও একই জিনিস ফোনে দেখা যায়।</p></section>
+
   <section><h2>⚠️ Alerts <span id="alertCount" class="badge"></span></h2><div id="alertList" class="muted">Loading…</div><p class="muted">Rules live in <code>config.yaml</code> under <code>alerts:</code>. Run <code>python main.py --alerts</code> for the same check in the terminal.</p></section>
 
   <section><h2>🔒 ডেটা ট্রান্সফার (Data Transfer) <span id="transferCount" class="badge"></span></h2><div id="transferSummary" class="muted">Loading…</div><table><thead><tr><th>When</th><th>Type</th><th>File / Channel</th><th>Destination</th><th>Size</th></tr></thead><tbody id="transferTable"></tbody></table><p class="muted">শুধু মেটাডেটা রেকর্ড হয় — ফাইলের নাম, সাইজ, কোথায় গেল, কখন, কোন অ্যাপ। মেসেজ / মেইলের ভেতরের লেখা, পাসওয়ার্ড বা টাইপ করা কিছুই পড়া হয় না। নিয়ম <code>config.yaml</code>-এর <code>transfers:</code> অংশে।</p></section>
@@ -590,6 +595,14 @@ $('saveSettingsBtn').onclick=saveSettings;
 $('testTelegramBtn').onclick=testTelegram;
 $('testEmailBtn').onclick=testEmail;
 $('lockBtn').onclick=async()=>{ try{ await fetch('/api/lock',{method:'POST'}); }catch(e){} location.reload(); };
+// Live screen (v12.15): poll /api/live-shot every 10 s while on.
+// A failed shot (locked screen is the usual cause) stops the timer
+// instead of showing a broken image forever.
+let liveTimer=null;
+function liveShot(){ $('liveImg').src='/api/live-shot?t='+Date.now(); }
+$('liveStartBtn').onclick=()=>{ if(liveTimer) return; $('liveWrap').style.display='block'; $('liveStartBtn').disabled=true; $('liveStopBtn').disabled=false; $('liveStatus').textContent='🔴 লাইভ চলছে — প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।'; liveShot(); liveTimer=setInterval(()=>{ liveShot(); $('liveTime').textContent='শেষ আপডেট: '+new Date().toLocaleTimeString(); },10000); };
+$('liveStopBtn').onclick=()=>{ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } $('liveStartBtn').disabled=false; $('liveStopBtn').disabled=true; $('liveStatus').textContent='বন্ধ আছে — চালু করলে প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।'; };
+$('liveImg').onerror=()=>{ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } $('liveStartBtn').disabled=false; $('liveStopBtn').disabled=true; $('liveStatus').textContent='⚠️ ছবি আসছে না — স্ক্রিন লক আছে কিনা দেখুন, তারপর আবার চালু করুন।'; };
 load();
 loadSettings();
 </script>

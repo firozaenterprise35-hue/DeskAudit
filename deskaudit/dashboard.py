@@ -36,6 +36,8 @@ API (all JSON, all local):
   GET /api/settings — current settings (the API key value is never returned)
   POST /api/settings — save settings; writes config.local.yaml only,
     never config.yaml. The agent/dashboard must restart to apply them.
+  GET /api/live-shot — one fresh screen JPEG for the live card
+    (Windows only; the same capture Telegram /live uses).
 
 Security: binds to 127.0.0.1 by default. Use --host 0.0.0.0 only on a
 trusted local network — the dashboard shows window titles and URLs.
@@ -895,6 +897,33 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
             # is on — otherwise the data would leak past the lock page.
             if lock is not None and not lock.is_unlocked(_parse_cookies(self.headers)):
                 self._send_json({"ok": False, "error": "locked"}, 401)
+                return
+
+            if parsed.path == "/api/live-shot":
+                # v12.15: one fresh screen JPEG for the dashboard's
+                # live card (the same capture Telegram /live uses).
+                # Locked sessions get 401 from the guard above.
+                import sys
+
+                if sys.platform != "win32":
+                    self._send_json({"ok": False,
+                                     "error": "live screen works on Windows only"}, 400)
+                    return
+                from .screen_record import capture_jpeg_frame
+
+                shot = project_root / "data" / "live-shot.jpg"
+                try:
+                    capture_jpeg_frame(shot)
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 500)
+                    return
+                try:
+                    self._send_file(shot, "image/jpeg")
+                finally:
+                    try:
+                        shot.unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 return
 
             if parsed.path == "/api/summary":

@@ -132,6 +132,37 @@ def test_dashboard_http():
     print("dashboard HTTP tests passed")
 
 
+def test_dashboard_live_shot():
+    """v12.15: /api/live-shot answers on the live dashboard. On
+    Linux (this test runs here) the capture refuses with 400
+    'Windows only' — the real JPEG is verified by the Xvfb smoke
+    on the frozen build, where BitBlt works."""
+    import urllib.error
+
+    tmp = Path(tempfile.mkdtemp())
+    db, date = seed_db(tmp)
+    db.close()
+    tagger = Tagger(projects=[Project(name="Office", daily_goal_minutes=240)])
+    server = DashboardServer(tmp / "test.db", host="127.0.0.1", port=0,
+                             tagger=tagger, project_root=tmp, lock_enabled=False)
+    url = server.start()
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            html = r.read().decode("utf-8")
+            assert "লাইভ স্ক্রিন" in html and "liveStartBtn" in html
+            assert "/api/live-shot" in html
+        try:
+            urllib.request.urlopen(url + "api/live-shot", timeout=5)
+            raise AssertionError("live-shot should refuse on Linux")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400, e.code
+            data = json.loads(e.read())
+            assert "Windows" in data["error"], data
+    finally:
+        server.stop()
+    print("dashboard live shot test passed")
+
+
 def test_save_settings_refuses_broken_local():
     # v12.13 (M1): one routine Settings save used to destroy
     # config.local.yaml (all secrets) when it was unparseable — the
@@ -349,6 +380,7 @@ def test_dashboard_js_syntax():
 if __name__ == "__main__":
     test_dashboard_summary()
     test_dashboard_http()
+    test_dashboard_live_shot()
     test_dashboard_settings()
     test_save_settings_refuses_broken_local()
     test_dashboard_settings_http()
