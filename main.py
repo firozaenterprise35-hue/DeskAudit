@@ -119,6 +119,19 @@ def setup_logging(log_path: Path) -> logging.Logger:
 def run_agent(config: Config, log: logging.Logger) -> int:
     _hide_console()  # background mode: no CMD window on the desktop
     db = Database(config.db_path)
+    # Hold the agent lock while running (v12.13, M14): --restore
+    # refuses while this lock is held, so a backup is never copied
+    # over the live WAL database.
+    agent_lock = None
+    try:
+        from deskaudit.backup import acquire_agent_lock
+        agent_lock = acquire_agent_lock(config.project_root)
+        if agent_lock is None:
+            log.warning("Another DeskAudit agent appears to be running "
+                        "(agent lock is held). This instance keeps running, "
+                        "but restores are blocked until all agents stop.")
+    except Exception as exc:
+        log.warning("Could not take the agent lock: %s", exc)
     tagger = load_tagger(config)
     sync_projects_to_db(db, tagger)
     merge_db_overrides(db, tagger)
@@ -150,8 +163,11 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     last_transfer_scan = 0.0
     last_delete_scan = 0.0
     last_telegram_poll = 0.0
-    last_telegram_digest = 0.0
-    last_email = 0.0
+    # Digest/email timers start NOW (v12.13, T1/P5): the old 0.0 meant
+    # the first loop iteration sent an unscheduled "গত 60 মিনিটের
+    # আপডেট" digest (and an email) on every agent start.
+    last_telegram_digest = time.time()
+    last_email = time.time()
     telegram_bot = None
     # Coerce once at startup: a bad poll_seconds used to raise inside
     # the loop condition every 5 s and kill the agent silently.
@@ -332,12 +348,24 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     log.info("DeskAudit running. Poll every %ss, idle after %ss. Ctrl+C to stop.",
              config.poll_interval_seconds, config.idle_threshold_seconds)
     try:
+        watcher_paused = False
         while True:
             if pause_file.exists():
                 # Paused: no tracking, no digest, no email — but the
                 # bot still answers commands, so /resume can wake the
                 # agent. The digest timer is reset so resuming does
                 # not immediately send an empty digest.
+                # v12.13 audit: the file watcher used to keep running
+                # through a pause (its observer thread was never
+                # stopped), so private file work during a pause was
+                # still recorded. Stop it on pause, restart on resume.
+                if watcher_started and not watcher_paused:
+                    try:
+                        watcher.stop()
+                        watcher_paused = True
+                        log.info("Paused: file watcher stopped.")
+                    except Exception as exc:
+                        log.warning("Could not stop file watcher on pause: %s", exc)
                 if telegram_bot is not None:
                     try:
                         telegram_bot.poll_commands()
@@ -346,6 +374,27 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 last_telegram_digest = time.time()
                 time.sleep(config.poll_interval_seconds)
                 continue
+            if watcher_paused:
+                # Restart once; a failure here behaves like the
+                # startup failure (logged once, agent keeps running).
+                try:
+                    watcher_started = watcher.start()
+                    watcher_paused = False
+                    if watcher_started:
+                        log.info("Resumed: file watcher restarted.")
+                    else:
+                        log.warning("Resumed, but the file watcher could not restart.")
+                except Exception as exc:
+                    watcher_paused = False
+                    log.warning("Could not restart file watcher on resume: %s", exc)
+                # Re-take the new-program baseline (v12.13, M13):
+                # programs opened during the pause must not surface
+                # all at once as "new" on resume.
+                if app_watch is not None:
+                    try:
+                        app_watch.baseline()
+                    except Exception as exc:
+                        log.warning("Could not re-baseline app watch on resume: %s", exc)
             window = None
             browser_info = None
             try:
@@ -440,17 +489,7 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                         log.warning("Telegram poll failed: %s", exc)
                 # New programs opened since the last tick go to Telegram
                 # immediately (v12.5) — which program, its window, when.
-                if (app_watch is not None and app_watch.enabled
-                        and telegram_bot.configured):
-                    try:
-                        new_apps = app_watch.check()
-                        if new_apps:
-                            sent = telegram_bot.notify_new_app(new_apps)
-                            if sent:
-                                log.info("New program alert sent: %s",
-                                         ", ".join(a["name"] for a in new_apps[:sent]))
-                    except Exception as exc:
-                        log.warning("New-program alert failed: %s", exc)
+                # (Moved out of this block in v12.13 — see below.)
                 try:
                     digest_minutes = int(telegram_bot.settings.get("digest_minutes", 60) or 60)
                 except (TypeError, ValueError):
@@ -462,6 +501,28 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                             log.info("Telegram digest sent.")
                     except Exception as exc:
                         log.warning("Telegram digest failed: %s", exc)
+            # New programs opened since the last tick (v12.5). Runs
+            # with or without Telegram (v12.13 audit, M13): the old
+            # code checked only inside the Telegram block, so on a
+            # Telegram-less PC app_watch.enabled promised alerts that
+            # could never fire, with no log line. Without Telegram the
+            # new programs are logged instead of sent.
+            if app_watch is not None and app_watch.enabled:
+                try:
+                    new_apps = app_watch.check()
+                    if new_apps:
+                        names = ", ".join(a["name"] for a in new_apps)
+                        if telegram_bot is not None and telegram_bot.configured:
+                            sent = telegram_bot.notify_new_app(new_apps)
+                            if sent:
+                                log.info("New program alert sent: %s",
+                                         ", ".join(a["name"] for a in new_apps[:sent]))
+                        else:
+                            log.warning("New program(s) — Telegram not configured, "
+                                        "so this is logged only (enable Telegram in "
+                                        "Settings for instant alerts): %s", names)
+                except Exception as exc:
+                    log.warning("New-program alert failed: %s", exc)
             # Email: one digest every interval_minutes.
             if (config.email or {}).get("enabled", False):
                 try:
@@ -504,6 +565,12 @@ def run_agent(config: Config, log: logging.Logger) -> int:
             _safe_stop("dashboard", dashboard_server.stop)
         _safe_stop("watcher", watcher.stop)
         _safe_stop("db", db.close)
+        if agent_lock is not None:
+            try:
+                from deskaudit.backup import release_agent_lock
+                release_agent_lock(agent_lock)
+            except Exception:
+                pass
     return 0
 
 
@@ -808,13 +875,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.restore is not None:
-        from deskaudit.backup import latest_backup, restore_backup
+        from deskaudit.backup import agent_is_running, latest_backup, restore_backup
 
+        # Refuse while the agent runs (v12.13, M14): copying a backup
+        # over the live WAL database could miss uncheckpointed data
+        # and corrupt the restore. The old code only printed a
+        # warning and restored anyway.
+        if agent_is_running(config.project_root):
+            print("Restore refused — the DeskAudit agent is still running.")
+            print("Stop the agent first (close DeskAudit from the Start Menu / Task Manager),")
+            print("then run this command again.")
+            return 1
         backup_path = latest_backup(config.project_root) if (args.restore == "__latest__" or args.latest) else Path(args.restore)
         if backup_path is None:
             print("No backups found.")
             return 1
-        print("Stop the DeskAudit agent first if it is running, then restore.")
         try:
             safety = restore_backup(config.db_path, backup_path, config.project_root)
             print(f"Restored from: {backup_path}")
@@ -1148,6 +1223,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sync_projects_to_db(db, tagger)
             merge_db_overrides(db, tagger)
+            # Fresh data first (v12.13, M7): the --alerts and evening
+            # branches refreshed history + transfers, but --ai-summary
+            # reported a stale day when the agent was stopped.
+            _refresh_before_summary(db, config, tagger)
             if args.weekly:
                 result, path = save_weekly_summary(
                     db, end=args.date, reports_dir=Path(config.project_root) / "reports",
@@ -1251,6 +1330,12 @@ def main(argv: list[str] | None = None) -> int:
             print("Usage: python main.py --project-tag domain github.com --project Study")
             return 2
         match_type, match_value = args.project_tag
+        # v12.13 (C-m4): an unknown match type used to print "Override
+        # saved" and then silently match nothing. Validate first.
+        if match_type not in ("domain", "url", "file", "app", "title"):
+            print(f"Unknown match type: {match_type!r}")
+            print("Valid types: domain, url, file, app, title")
+            return 2
         db = Database(config.db_path)
         try:
             db.set_project_override(match_type, match_value, args.project)
@@ -1321,6 +1406,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sync_projects_to_db(db, tagger)
             merge_db_overrides(db, tagger)
+            # Fresh data first (v12.13, M7): same as --ai-summary above.
+            _refresh_before_summary(db, config, tagger)
             text, md_path, csv_path = generate_report(
                 db, args.date or today_str(), Path(config.project_root) / "reports",
                 tagger=tagger,

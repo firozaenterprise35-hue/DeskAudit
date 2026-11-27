@@ -100,6 +100,9 @@ def build_hourly_email(db, day: str, since_minutes: int = 60) -> tuple[str, str,
     # report summary: projects with goals, searches, downloads and
     # transfer rows with file names (not just counts).
     transfer_rows_html = ""
+    project_html = ""
+    search_html = ""
+    download_html = ""
     try:
         from .report import build_summary
 
@@ -109,23 +112,36 @@ def build_hourly_email(db, day: str, since_minutes: int = 60) -> tuple[str, str,
     if s:
         projects = [p for p in s.get("projects", [])
                     if p.get("project") != "Untagged"]
+        project_html = ""
         if projects:
             lines.append("প্রজেক্ট:")
+            project_items = []
             for p in projects[:5]:
                 goal = ""
                 if p.get("goal_minutes"):
                     goal = (f" / লক্ষ্য {_fmt_min(p['goal_minutes'] * 60)}"
                             f" ({p.get('goal_percent', 0)}%)")
                 lines.append(f"  • {p['project']} — {_fmt_min(p['active_seconds'])}{goal}")
+                project_items.append(
+                    f"{p['project']} — {_fmt_min(p['active_seconds'])}{goal}")
+            project_html = ("<p>প্রজেক্ট:<br>" + "<br>".join(project_items) + "</p>")
         b = s.get("browser", {})
+        search_html = ""
         if b.get("searches"):
             lines.append("সার্চ:")
+            search_items = []
             for q in b["searches"][:5]:
                 lines.append(f"  • {q['query']} (x{q['count']})")
+                search_items.append(f"{q['query']} (x{q['count']})")
+            search_html = ("<p>সার্চ:<br>" + "<br>".join(search_items) + "</p>")
+        download_html = ""
         if b.get("downloads"):
             lines.append("ডাউনলোড:")
+            download_items = []
             for d in b["downloads"][:5]:
                 lines.append(f"  • {d['file']} [{d.get('state', '')}]")
+                download_items.append(f"{d['file']} [{d.get('state', '')}]")
+            download_html = ("<p>ডাউনলোড:<br>" + "<br>".join(download_items) + "</p>")
         tr = s.get("transfers", {})
         if tr.get("rows"):
             lines.append("ডেটা ট্রান্সফার:")
@@ -162,7 +178,8 @@ def build_hourly_email(db, day: str, since_minutes: int = 60) -> tuple[str, str,
     html = (f"<html><body><h2>DeskAudit — গত {since_minutes} মিনিটের আপডেট</h2>"
             f"<p>তারিখ: {day}, সময়: {now}</p>"
             f"<table border='1' cellpadding='6'><tr><th>অ্যাপ</th><th>সময়</th></tr>"
-            f"{app_rows}</table>{transfer_line}{alert_line}"
+            f"{app_rows}</table>{project_html}{search_html}{download_html}"
+            f"{transfer_line}{alert_line}"
             f"<p><small>মেটাডেটা শুধু — টাইপ করা লেখা বা মেসেজের ভেতরের কথা "
             f"এতে থাকে না।</small></p></body></html>")
     return subject, text, html

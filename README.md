@@ -115,11 +115,11 @@ offline. All data comes from `data/deskaudit.db` on this computer.
 
 | Section | What you see |
 |---|---|
-| Header | Date picker, Prev / Next day, Today, trend range 7 / 14 / 30 days, Refresh, Auto-refresh 30s, Export (Markdown, Apps CSV, Browser CSV, Projects CSV) |
-| KPI cards (14) | Active, Idle, Apps used, Browser time, Productive, Distracting, Projects worked, File events, Visits, Searches, Downloads, Untagged time — each with its sub-note (%, goals met, …) |
+| Header | Date picker, Prev / Next day, Today, trend range 7 / 14 / 30 days, Refresh, Auto-refresh 30s, Export (Markdown, Apps CSV, Browser CSV, Projects CSV, Transfers CSV) |
+| KPI cards (17) | Active, Idle, Apps used, Browser time, Productive, Distracting, Other (browser), Projects worked, File events, Visits, Searches, Downloads, Untagged time, Quarantined, Hidden — each with its sub-note (%, goals met, …). "Other" is browsing that is neither productive nor distracting (unlisted work sites, news) — it is not counted as distracting. |
 | Today at a glance | One sentence: active / idle, apps, browser productive vs distracting, projects worked |
 | Hourly activity | Bar chart, 0–23h, active minutes per hour (browser is a subset, never added on top; hover shows browser minutes) |
-| Productive vs distracting | Donut chart with % + legend |
+| Productive vs distracting | Donut chart with % + legend (productive / distracting / other) |
 | Projects | Bar + goal progress per project: active, app / browser split, files, visits, goal %, ✓ when met |
 | Top apps | Horizontal bars, top 10 by active time |
 | Top domains | Horizontal bars, top 10 by active time / visits |
@@ -130,17 +130,24 @@ offline. All data comes from `data/deskaudit.db` on this computer.
 | App sessions table | App, window title, project, active, sessions — with text search |
 | Browser tables | Top domains, top searches, downloads |
 | Recent file events | Last 20: when, event, path, project |
+| 🔒 Data Transfer | Today's transfers by type (USB / cloud / email / message / print / sensitive copy / large transfer) with file names, sizes and destinations |
+| 🗑️ Quarantined | Files the delete protection is holding, with their original paths (restore / purge from Telegram /deleted) |
+| 🫥 Hidden | Files hidden from Telegram /explore, with restore buttons |
 | Untagged | Top untagged apps / domains / titles, with a hint to add a rule + `--retag` |
 | Alerts | Today's alerts with severity badges (🔴 critical / 🟡 warning / 🔵 info) |
 | Daily summary | Bengali narrative for the day, all 8 sections (incl. Data transfers) |
 | Weekly review | 7-day review: totals, best / weakest day, top project, trend |
-| ⚙️ Settings | AI (LLM) provider / model / API key, agent, secret gate, alerts, backup and Data Transfer settings — saved to `config.local.yaml` (`config.yaml` is never changed, the key is never shown back). Restart the agent and dashboard to apply. |
+| ⚙️ Settings | AI (LLM) provider / model / API key, agent, secret gate, alerts (incl. deletion-burst and night-window thresholds, known safe apps), backup, Data Transfer, Telegram, New-program alerts, Delete protection, File explorer and Hourly email settings — saved to `config.local.yaml` (`config.yaml` is never changed, the key is never shown back). Delete-protection settings apply within ~30 s; most others need the agent and dashboard restarted. |
 
-API (JSON, local only): `GET /api/health`, `/api/summary?date=YYYY-MM-DD`,
+API (JSON, local only): `GET /api/health` (unauthenticated — it only answers "ok", it never returns data), `/api/summary?date=YYYY-MM-DD`,
 `/api/range?days=7&end=YYYY-MM-DD`, `/api/alerts?date=YYYY-MM-DD`,
 `/api/narrative?date=YYYY-MM-DD`, `/api/weekly?end=YYYY-MM-DD&days=7`,
 `/api/export?date=YYYY-MM-DD&format=md|csv|browser|projects|transfers`,
-`/api/transfers?date=YYYY-MM-DD`, `GET /api/settings`, `POST /api/settings`.
+`/api/transfers?date=YYYY-MM-DD`, `/api/quarantined`, `/api/hidden`,
+`/api/unlock`, `/api/lock`, `/api/telegram-test`, `/api/email-test`,
+`GET /api/settings`, `POST /api/settings`. (`/api/quarantined` and
+`/api/hidden` are direct API endpoints — the dashboard page itself shows
+the same data embedded in `/api/summary`.)
 
 Options: `python main.py --dashboard --port 8001 --host 127.0.0.1 --no-open`.
 Do not use `--host 0.0.0.0` on an untrusted network — the page shows
@@ -174,8 +181,9 @@ python main.py --alerts-list --unread
 
 All thresholds live under `alerts:` in `config.yaml`. Alerts are stored
 in the `alerts` table, deduped on (date, type, title), so re-running
-never duplicates them — only NEW alerts are notified. Notification tries
-`plyer` if installed, otherwise a PowerShell toast; on Linux it simply
+never duplicates them — only NEW alerts are notified. Notification is a
+PowerShell toast on Windows (the old `plyer` path is gone — it was never
+in requirements.txt, so it could never run); on Linux it simply
 skips notification (alerts are still saved and shown on the dashboard).
 The dashboard has an Alerts card (`/api/alerts?date=...`) with severity badges.
 
@@ -210,8 +218,18 @@ python main.py --transfers --date 2026-11-23
 | **Email** | Gmail, Outlook, Yahoo mail, Proton, Zoho (channel used + duration) |
 | **Messaging** | WhatsApp Web, Telegram Web, Messenger, Teams, Slack, Discord, Skype |
 | **Printing** | Print jobs seen in the Windows spooler (polled every 60 s — a job that prints and finishes between two polls is missed): document name, pages, printer |
-| **Sensitive folders** | A file moved/copied OUT of a folder you mark in `transfers.sensitive_folders` — e.g. `%USERPROFILE%/Documents/CompanyData` |
-| **Large transfers** | Any single file move or copy over `large_transfer_mb` (default 100 MB) |
+| **Sensitive folders** | A file moved/copied OUT of a folder you mark in `transfers.sensitive_folders` — e.g. `%USERPROFILE%/Documents/CompanyData`. Detected when the copy lands in a watched folder (Desktop, Documents, a sensitive folder, or any `watch_folders` entry) or on a USB drive; see the honest limit below. Since v12.13 the original is found in subfolders too, not just the top level. |
+| **Large transfers** | Any single file move or copy over `large_transfer_mb` (default 100 MB) — where the destination is a watched folder or a USB drive (same limit as above). |
+
+> **Honest limit (v12.13 audit):** the agent only sees file events in the
+> folders it watches (Desktop, Documents, sensitive folders, `watch_folders`).
+> A copy from a sensitive folder to an **unwatched** place — e.g. `D:\` or
+> `C:\Temp` — creates no event anywhere the agent looks, so it is invisible
+> to the transfer monitor. (A copy onto a USB drive IS caught, by the USB
+> snapshot diff.) To cover another destination, add it to `watch_folders`
+> in `config.yaml` (or Dashboard Settings → the watch-folders list). This
+> is a real blind spot, not a bug in one scan — Windows does not tell the
+> agent when a watched file is merely *read* for copying.
 
 Everything is shown on the dashboard (🔒 ডেটা ট্রান্সফার section + two
 KPI cards + `/api/transfers?date=...`), in the daily report
@@ -309,7 +327,9 @@ so these run from your Telegram chat only.
   admin); **/browser unblock <domain>** lifts it.
 - **/screen white** / **/screen black**: covers every monitor with a
   solid white or black fullscreen window (always on top, no close
-  box) until **/screen off** lifts it. If the agent stops, the
+  box) until **/screen off** lifts it. Honest limit: it is a visual
+  cover, not a lock — the keyboard and mouse still work, so Alt+Tab
+  or Task Manager can still reach the PC. If the agent stops, the
   overlay dies with it.
 - **/shutdown** / **/restart**: the PC powers off / restarts 60
   seconds after you confirm (so work can be saved); **/abort**
@@ -427,8 +447,9 @@ restores it to the exact same place.
   the folder if needed, and renaming with a timestamp if a new file
   took its place. If the owner says nothing, the file simply stays
   held: **held files are never auto-purged**. Only the mirror copies
-  are pruned (past `mirror_retention_days` or the `quarantine_max_gb`
-  mirror cap). A restore re-mirrors the file at once, so a second
+  are pruned (orphan mirror copies only, past the `quarantine_max_gb`
+  mirror cap — the old `mirror_retention_days` setting was removed in
+  v12.13: it pruned live protection and was no longer read). A restore re-mirrors the file at once, so a second
   delete right after a restore is protected too.
 - Dashboard: a **🗑️ মুছে যাওয়া ফাইল** section (recent quarantined
   files + status), a 15th KPI card (Quarantined), `/api/quarantined`,
@@ -532,6 +553,76 @@ and four more real bugs:
   `mirror_max_mb` (default 500 MB) are not mirrored; the Recycle
   Bin scan covers every drive that has a bin, including USB drives
   plugged in after the agent started.
+
+**Full-system audit (v12.13)** — the owner asked for every feature and
+function of the whole software to be analysed and audited step by
+step, and every issue found to be fixed until nothing was left. Five
+auditors (core tracking, dashboard, Telegram, protection/transfers,
+build/packaging) read the code end to end; all 23 test files passed
+before the audit, so every finding was code-level or verified by a
+targeted reproduction. **3 CRITICAL, 20 MAJOR and ~30 MINOR findings —
+all fixed.**
+- **CRITICAL — /close and /freeze could kill Windows system processes:**
+  the protected-app check was exact, but process matching was by
+  substring — `/close vchost` matched `svchost.exe`, `/close e`
+  matched `chrome.exe`. Now only the exact exe name matches (`.exe`
+  optional); names shorter than 3 letters and anything that is a
+  substring of a protected name are refused.
+- **CRITICAL — `--restore --latest` restored the wrong file:** the
+  backup list included before-restore safety copies, which sort
+  before dated backups — so restoring "the latest" silently undid
+  the last restore. Dated backups only now; safety copies are
+  listed separately.
+- **CRITICAL — concurrent DB writes silently lost data:** the shared
+  SQLite connection had no lock, though three threads write to it —
+  a stress test kept only 204 of 800 rows. All writes are now
+  serialised behind one lock (800/800 in the same test).
+- **MAJOR — a Settings save could destroy `config.local.yaml`:**
+  when the local file was unparseable it was overwritten with only
+  the new values (key, bot token, SMTP password gone, UI said
+  "✅ Saved"). Saving now refuses when the existing file fails to
+  parse, and backs it up first.
+- **MAJOR — protected folders were a dead setting:** `delete_protect.
+  protected_folders` was shown in Settings but never read, so a
+  Shift+Delete in an added folder was unrecoverable. The setting
+  now feeds the watcher, the mirror and the transfer scan.
+- **MAJOR — untagged time counted only the top 5 apps; unlisted
+  browsing all counted as "distracting":** both fixed — untagged
+  time is now a true total, and browsing has a third neutral
+  "Other" bucket (new KPI card, 17 total; the donut is 3-slice).
+- **MAJOR — PAUSE did not pause file tracking; app-watch alerts were
+  dead without Telegram; the restore had no guard against a running
+  agent; one held file became undecidable in Telegram when a second
+  file was deleted:** all fixed — the watcher stops on pause, app
+  alerts log even without Telegram, `--restore` refuses while the
+  agent runs (lock file), and every held file now has its own
+  token-bound ✅/↩️ buttons (also on /deleted).
+- **MAJOR — packaging:** uninstallers no longer leave the 9pm
+  scheduled task behind; Inno no longer deletes `config.local.yaml`
+  on uninstall; `config.local.yaml` is now copied into the package
+  by the build itself (from the repo root before building), not by a
+  manual copy afterwards; the GitHub Actions workflow reads the
+  version from the code instead of saying v10.0; the Quick Start no
+  longer tells you to copy the whole `config.yaml` (which froze all
+  settings against upgrades) — a minimal overrides file instead.
+- **MINOR — also fixed:** night window crossing midnight (22–05)
+  never fired; cloud/email thresholds never fired for
+  history-only days; quoted `"false"` in config counted as true;
+  poll intervals unvalidated (0 = busy loop); the gate code was
+  returned in plaintext by `/api/settings` (write-only now);
+  Settings number fields that were cleared silently kept the old
+  value; a bad `?date=` silently served today (400 now); alert
+  thresholds and known safe apps are editable in Settings; the
+  email HTML now has the projects/searches/downloads sections the
+  plain text always had; downloads with no start time were
+  re-logged on every poll and never appeared in reports; `--retag`
+  counts overstated the work; the screen overlay is documented as
+  a visual cover, not a lock (Alt+Tab / Task Manager still work).
+- **Honest limits, documented:** a copy out to an unwatched location
+  (an unlisted drive or folder) is invisible to transfer detection
+  — only destinations that are watched folders or USB drives are
+  seen; the screen overlay does not block input; `/api/health`
+  stays unauthenticated on purpose (it only answers "ok").
 
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
@@ -672,7 +763,8 @@ DeskAudit/
 │   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
 │   ├── dashboard.py         # Web dashboard: data API + stdlib HTTP server
 │   ├── dashboard_static/
-│   │   └── index.html       # Dashboard page: cards, charts, tables, filters
+│   │   ├── index.html       # Dashboard page: cards, charts, tables, filters
+│   │   └── lock.html        # Blank-white lock page: type 1122 + Enter, no input/button
 │   ├── report.py            # Daily summary: Markdown + CSV (incl. browser + projects + transfers)
 │   └── utils.py             # Duration formatting, path helpers
 ├── installer/
@@ -718,8 +810,18 @@ DeskAudit/
 py -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy config.yaml config.local.yaml
-REM Edit config.local.yaml if you want different folders, then:
+REM Only create config.local.yaml when you need to OVERRIDE something
+REM (a secret, a folder, a threshold) — never copy the whole config.yaml
+REM into it: a full copy freezes every value at copy time, so a later
+REM version's changed defaults in config.yaml are silently ignored.
+REM Example — only the lines you actually change:
+REM   llm:
+REM     api_key: "your-gemini-key"
+REM   telegram:
+REM     bot_token: "123456:ABC..."
+REM     chat_id: "123456789"
+REM Or skip the file entirely and set everything from the dashboard
+REM Settings page (it writes config.local.yaml for you).
 run.bat
 ```
 
@@ -736,7 +838,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.12.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.13.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -767,29 +869,34 @@ One-shot commands (`--report`, `--ai-summary`, ...) still work from
 the Python source (`python main.py --ai-summary`); the frozen exe
 writes its output to the log file and the dashboard instead.
 
-**Secret gate — open the dashboard without any window:** click 4 times
-on any empty spot of the desktop, then type `1122` on the keyboard —
-the dashboard opens in the browser (`http://127.0.0.1:8000/`).
+**Secret gate — open the dashboard without any window:** first launch
+DeskAudit once from the Start Menu (the gate only runs while the
+agent is running — with the agent stopped, the 4 clicks + code do
+nothing, with no feedback). Then click 4 times on any empty spot of
+the desktop, then type `1122` on the keyboard — the dashboard opens
+in the browser (`http://127.0.0.1:8000/`).
 The agent serves the dashboard itself while it runs, so no separate
 `--dashboard` process is needed. Change the clicks/code (or turn the
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.12-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.13-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.12.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.13.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.12.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.13.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
-builds both files on every push to `main` and attaches them to
-Release v10.0 — it needs the workflow file added to the repo first
-(the Muse GitHub App cannot create `.github/workflows/` files via API).
+builds both files on every push to `main` and attaches them to a
+release named after the version in `deskaudit/__init__.py` — the
+workflow reads the version from the code, so it never goes stale.
+(The Muse GitHub App cannot push `.github/workflows/` files via API,
+so the workflow file itself is committed locally only.)
 
 The exe finds its own `config.yaml` next to itself, so shortcuts and
 the 9pm scheduled task work from any folder. `config.local.yaml`

@@ -22,10 +22,14 @@ def get_idle_seconds() -> float:
         info.cbSize = ctypes.sizeof(info)
         if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
             return 0.0
-        # GetTickCount64 (not GetTickCount): the 32-bit counter wraps
-        # every ~49.7 days of continuous uptime, after which idle reads 0.
-        tick = ctypes.windll.kernel32.GetTickCount64()
-        millis = tick - info.dwTime
+        # GetTickCount (32-bit) and dwTime share the same clock, so
+        # their difference mod 2^32 stays correct even when the
+        # counter wraps every ~49.7 days of uptime (v12.13 audit,
+        # M8). The old code subtracted the 32-bit dwTime from the
+        # 64-bit GetTickCount64 — after the first wrap that read
+        # ~49 days of idle, forever, until reboot.
+        tick = ctypes.windll.kernel32.GetTickCount()
+        millis = (tick - info.dwTime) & 0xFFFFFFFF
         return max(0.0, millis / 1000.0)
     except Exception:
         return 0.0

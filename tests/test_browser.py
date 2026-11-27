@@ -128,6 +128,132 @@ def test_chrome_and_firefox_history():
     print("browser tests passed")
 
 
+def test_extension_tab_dedup():
+    # v12.13 (M3): the extension re-posts the active tab every 60 s;
+    # the old code logged a new visit row per post (an 8-hour open
+    # Google tab made ~480 duplicate visit + search rows).
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    tracker = BrowserTracker(db, Config(), profiles=[])
+    base = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
+    url = "https://www.google.com/search?q=python+sqlite"
+    for minutes in (0, 1, 2):
+        tracker.record_extension_tab("Chrome", url, "python sqlite - Google Search",
+                                     base + timedelta(minutes=minutes))
+    visits = db.conn.execute("SELECT COUNT(*) c FROM browser_visits").fetchone()["c"]
+    searches = db.conn.execute("SELECT COUNT(*) c FROM browser_searches").fetchone()["c"]
+    assert visits == 1, visits
+    assert searches == 1, searches
+    # After the 5-minute window a re-post is a new visit again.
+    tracker.record_extension_tab("Chrome", url, "python sqlite - Google Search",
+                                 base + timedelta(minutes=6))
+    visits = db.conn.execute("SELECT COUNT(*) c FROM browser_visits").fetchone()["c"]
+    assert visits == 2, visits
+    db.close()
+    print("extension tab dedup passed")
+
+
+def test_track_searches_false():
+    # v12.13 (M2): the Dashboard track_searches toggle did nothing —
+    # searches were recorded in all three paths regardless.
+    tmp = Path(tempfile.mkdtemp())
+    when = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
+    chrome = tmp / "History"
+    make_chrome_db(chrome, when)
+    db = Database(tmp / "test.db")
+    config = Config()
+    config.track_searches = False
+    profiles = [BrowserProfile("Chrome", "chromium", "Default", chrome)]
+    tracker = BrowserTracker(db, config, profiles=profiles)
+    counts = tracker.audit_now()
+    assert counts["visits"] == 2, counts  # Google search + GitHub (Chrome only)
+    assert counts["searches"] == 0, counts
+    searches = db.conn.execute("SELECT COUNT(*) c FROM browser_searches").fetchone()["c"]
+    assert searches == 0, searches
+    tracker.record_extension_tab("Chrome", "https://www.google.com/search?q=python+sqlite",
+                                 "python sqlite - Google Search", when)
+    searches = db.conn.execute("SELECT COUNT(*) c FROM browser_searches").fetchone()["c"]
+    assert searches == 0, searches
+    visits = db.conn.execute("SELECT COUNT(*) c FROM browser_visits").fetchone()["c"]
+    assert visits == 3, visits  # the visit itself is still recorded
+    db.close()
+    print("track_searches false passed")
+
+
+def test_browser_totals_neutral_bucket():
+    # v12.13 (M5): every unlisted domain used to count as
+    # "distracting" — an intranet site or an unlisted work site
+    # inflated the Distracting KPI and could trip the alert. Only
+    # known-distracting categories count now; unlisted sites are
+    # a neutral "other" bucket.
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    base = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
+    date = "2026-11-23"
+    sid = db.start_browser_session("Chrome", "https://intranet.local/home",
+                                   "intranet.local", "Intranet", "other", False,
+                                   base, project="Office")
+    db.close_browser_session(sid, base + timedelta(minutes=30), 1800, 1800, 0)
+    sid = db.start_browser_session("Chrome", "https://www.facebook.com/feed",
+                                   "facebook.com", "Facebook", "social", False,
+                                   base + timedelta(hours=1), project="Office")
+    db.close_browser_session(sid, base + timedelta(hours=1, minutes=10), 600, 600, 0)
+    totals = db.browser_totals(date)
+    assert float(totals["active"]) == 2400.0
+    assert float(totals["distracting"]) == 600.0, totals["distracting"]
+    assert float(totals["other_seconds"]) == 1800.0, totals["other_seconds"]
+    summary = build_summary(db, date)
+    assert summary["browser"]["distracting_seconds"] == 600.0
+    assert summary["browser"]["other_seconds"] == 1800.0
+    db.close()
+    print("browser totals neutral bucket passed")
+
+
+def test_null_started_download_deduped_and_reported():
+    """v12.13 (C-m3): a download with no start time was re-logged on
+    every poll (NULL defeats the UNIQUE key) and never appeared in any
+    report. Now it is logged once and shows on today's report."""
+    from deskaudit.utils import today_str
+
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    today = today_str()
+    first = db.log_browser_download("chrome", "https://x.example/f.zip",
+                                    "x.example", "C:/dl/f.zip", "f.zip",
+                                    100, 100, "complete", None)
+    second = db.log_browser_download("chrome", "https://x.example/f.zip",
+                                     "x.example", "C:/dl/f.zip", "f.zip",
+                                     100, 100, "complete", None)
+    assert first is True and second is False
+    rows = db.downloads_for_date(today)
+    assert any(r["file_name"] == "f.zip" for r in rows), rows
+    db.close()
+    print("null started download deduped and reported passed")
+
+
+def test_search_like_escapes_wildcards():
+    """v12.13 (C-m11): a search for '%' must not match every row."""
+    from deskaudit.utils import today_str
+
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    today = today_str()
+    db.log_browser_search("chrome", "https://google.com/search?q=hello",
+                          "google.com", "hello",
+                          datetime.now().astimezone())
+    res = db.search_today(today, "%")
+    assert res["searches"] == [], res
+    res = db.search_today(today, "hello")
+    assert len(res["searches"]) == 1
+    db.close()
+    print("search LIKE escapes wildcards passed")
+
+
 if __name__ == "__main__":
     test_utils()
     test_chrome_and_firefox_history()
+    test_extension_tab_dedup()
+    test_track_searches_false()
+    test_browser_totals_neutral_bucket()
+    test_null_started_download_deduped_and_reported()
+    test_search_like_escapes_wildcards()

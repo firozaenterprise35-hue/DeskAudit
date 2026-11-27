@@ -49,8 +49,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .utils import today_str
@@ -263,7 +264,9 @@ def list_print_jobs() -> list[dict]:
         handle = None
         try:
             handle = win32print.OpenPrinter(name)
-            for job in win32print.EnumJobs(handle, 0, 100, 1):
+            # v12.13 (P3): was capped at the first 100 jobs; a busy
+            # spooler could hide jobs past the cap.
+            for job in win32print.EnumJobs(handle, 0, 1000, 1):
                 try:
                     submitted = job.get("Submitted") or ()
                     jobs.append({
@@ -339,7 +342,11 @@ class TransferMonitor:
         self._usb_snapshots: dict[str, dict] = {}
         self._seen_usb: set[str] = set()
         self._usb_seeded = False
-        self._seen_print_jobs: set[tuple[str, int]] = set()
+        self._seen_print_jobs: set[tuple[str, int, datetime]] = set()
+        # (file_name, size_bytes) index of every file inside the
+        # sensitive folders, cached 5 minutes (v12.13, M11).
+        self._sensitive_index_cache: set | None = None
+        self._sensitive_index_at: float = 0.0
 
     # -- helpers ---------------------------------------------------------
     def _log(self, transfer: Transfer) -> bool:
@@ -376,21 +383,34 @@ class TransferMonitor:
         return (now + timedelta(milliseconds=index)).isoformat(timespec="milliseconds")
 
     def _seed_usb_seen(self, date: str) -> None:
-        """On the first poll, treat drives with a usb_insert row TODAY as
-        already seen — otherwise every agent restart logs a spurious
-        usb_insert for a drive that was never unplugged."""
+        """On the first poll, treat drives with a usb_insert row as already
+        seen — otherwise every agent restart logs a spurious usb_insert
+        for a drive that was never unplugged.
+
+        v12.13 (P7): used to seed only TODAY's rows, so a drive plugged
+        in yesterday + a restart today logged a spurious insert. Now the
+        latest insert/remove event of the last 7 days decides: a drive
+        whose latest event is usb_insert is already plugged in."""
         if self._usb_seeded:
             return
         self._usb_seeded = True
         try:
+            from datetime import timedelta as _td
+            week_ago = (datetime.strptime(date, "%Y-%m-%d") - _td(days=7)
+                        ).strftime("%Y-%m-%d")
             rows = self.db.conn.execute(
-                "SELECT channel FROM transfers WHERE date = ? AND transfer_type = 'usb_insert'",
-                (date,)).fetchall()
-            current = set(list_removable_drives())
+                """SELECT channel, transfer_type FROM transfers
+                   WHERE date >= ? AND transfer_type IN ('usb_insert', 'usb_remove')
+                   ORDER BY occurred_at""",
+                (week_ago,)).fetchall()
+            latest: dict[str, str] = {}
             for r in rows:
-                if r["channel"] in current:
-                    self._seen_usb.add(r["channel"])
-                    self._usb_snapshots[r["channel"]] = snapshot_drive(r["channel"])
+                latest[r["channel"]] = r["transfer_type"]
+            current = set(list_removable_drives())
+            for ch, typ in latest.items():
+                if typ == "usb_insert" and ch in current:
+                    self._seen_usb.add(ch)
+                    self._usb_snapshots[ch] = snapshot_drive(ch)
         except Exception:
             pass
 
@@ -452,12 +472,23 @@ class TransferMonitor:
         now = now or self._now()
         date = now.strftime("%Y-%m-%d")
         found: list[Transfer] = []
+        # v12.13 (P3): _seen_print_jobs used to grow forever and a job ID
+        # reused after a spooler restart was skipped silently. Evict
+        # entries older than a day each poll (a job is only "new" on
+        # the day it is first seen).
+        cutoff = now - timedelta(days=1)
+        self._seen_print_jobs = {
+            (p, j, ts) for (p, j, ts) in self._seen_print_jobs
+            if ts > cutoff
+        }
+        seen_keys = {(p, j) for (p, j, _ts) in self._seen_print_jobs}
         for i, job in enumerate(list_print_jobs()):
             job_id = job.get("job_id") or 0
             printer = job.get("printer", "")
-            if not job_id or (printer, job_id) in self._seen_print_jobs:
+            if not job_id or (printer, job_id) in seen_keys:
                 continue
-            self._seen_print_jobs.add((printer, job_id))
+            self._seen_print_jobs.add((printer, job_id, now))
+            seen_keys.add((printer, job_id))
             t = Transfer("print", channel=printer,
                          file_name=job.get("document", ""),
                          size_bytes=job.get("size_bytes") or None,
@@ -525,19 +556,52 @@ class TransferMonitor:
                 found.append(t)
         return found
 
+    def _sensitive_index(self) -> set:
+        """(file_name, size_bytes) for every file inside the sensitive
+        folders — the WHOLE tree, not just the top level (v12.13
+        audit, M11: the old check only looked at `folder/file_name`,
+        so an original in `D:/Accounts/2026/invoice.xlsx` was missed
+        and its copy out was never flagged). Cached 5 minutes so a
+        big sensitive tree is not re-walked on every 60 s scan."""
+        now = time.monotonic()
+        if (self._sensitive_index_cache is not None
+                and now - self._sensitive_index_at < 300):
+            return self._sensitive_index_cache
+        index: set = set()
+        for folder in self.sensitive_folders:
+            try:
+                root = Path(folder)
+                if not root.is_dir():
+                    continue
+                for p in root.rglob("*"):
+                    try:
+                        if p.is_file():
+                            index.add((p.name, p.stat().st_size))
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        self._sensitive_index_cache = index
+        self._sensitive_index_at = now
+        return index
+
     def _sensitive_original_exists(self, file_name: str, size) -> bool:
         """True when a file with this name (and size, when known) still
         sits inside a sensitive folder — i.e. the created file outside
-        it is a copy of that original, not a new file of the same name."""
-        for folder in self.sensitive_folders:
-            candidate = Path(folder) / file_name
-            try:
-                if candidate.is_file():
-                    if size is None or candidate.stat().st_size == int(size):
-                        return True
-            except (OSError, ValueError):
-                continue
-        return False
+        it is a copy of that original, not a new file of the same name.
+
+        Size 0/unknown (a `created` event fires when a copy STARTS,
+        before any bytes land) matches on name alone: a same-named
+        file inside a sensitive folder is strong enough evidence for
+        a metadata flag the owner can check."""
+        index = self._sensitive_index()
+        try:
+            size_int = int(size) if size is not None else None
+        except (TypeError, ValueError):
+            size_int = None
+        if not size_int:
+            return any(name == file_name for name, _ in index)
+        return (file_name, size_int) in index
 
     def _usb_drive_for(self, dest: str, removable: list[str]) -> str:
         """The removable drive root `dest` sits on, or ''."""
@@ -595,29 +659,44 @@ class TransferMonitor:
                 if self._log(t):
                     found.append(t)
             # A big file moved OR copied anywhere (a copy out), incl. onto
-            # a USB drive.
-            if size and int(size) >= large_bytes and r["event_type"] in ("moved", "created"):
+            # a USB drive. v12.13 (P7): the `created` event fires when a
+            # copy STARTS, so its size may be 0 or partial — a large slow
+            # copy slipped under the threshold. So when the logged size
+            # is below the threshold the file's CURRENT on-disk size is
+            # checked (the copy is usually finished by scan time).
+            # `modified` events are deliberately NOT scanned: editing a
+            # large file in place is not a transfer. One row per file
+            # per day: the _log dedup key covers repeated scans of the
+            # same event.
+            if r["event_type"] in ("moved", "created"):
                 target = dest if (r["event_type"] == "moved" and dest) else src
-                usb_drive = self._usb_drive_for(target, removable)
-                if usb_drive:
+                size_now = size
+                if not size_now or int(size_now) < large_bytes:
                     try:
-                        if self.db.has_transfer(date, "usb_copy", target):
-                            continue
+                        size_now = Path(target.replace("\\", "/")).stat().st_size
                     except Exception:
-                        pass
-                    t = Transfer("usb_copy", channel=usb_drive,
-                                 file_name=name, file_path=src, size_bytes=int(size),
-                                 destination=target,
-                                 occurred_at=r["occurred_at"], date=date)
-                else:
-                    t = Transfer("large_transfer",
-                                 channel=Path(target.replace("\\", "/")).parent.as_posix(),
-                                 file_name=name, file_path=src, size_bytes=int(size),
-                                 destination=target,
-                                 occurred_at=r["occurred_at"],
-                                 details={"source": r["event_type"]}, date=date)
-                if self._log(t):
-                    found.append(t)
+                        size_now = size
+                if size_now and int(size_now) >= large_bytes:
+                    usb_drive = self._usb_drive_for(target, removable)
+                    if usb_drive:
+                        try:
+                            if self.db.has_transfer(date, "usb_copy", target):
+                                continue
+                        except Exception:
+                            pass
+                        t = Transfer("usb_copy", channel=usb_drive,
+                                     file_name=name, file_path=src, size_bytes=int(size_now),
+                                     destination=target,
+                                     occurred_at=r["occurred_at"], date=date)
+                    else:
+                        t = Transfer("large_transfer",
+                                     channel=Path(target.replace("\\", "/")).parent.as_posix(),
+                                     file_name=name, file_path=src, size_bytes=int(size_now),
+                                     destination=target,
+                                     occurred_at=r["occurred_at"],
+                                     details={"source": r["event_type"]}, date=date)
+                    if self._log(t):
+                        found.append(t)
         return found
 
     def scan_today(self) -> dict[str, int]:

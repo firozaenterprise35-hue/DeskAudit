@@ -2,17 +2,17 @@
 ; Build the exe first (build_exe.bat on Windows, or the Wine build),
 ; then compile this with NSIS (Windows: makensis; Linux: apt install nsis):
 ;   makensis installer\DeskAudit.nsi
-; Output: installer\Output\DeskAudit-Setup-12.7.exe
+; Output: installer\Output\DeskAudit-Setup-12.13.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 ; Paths are relative to this script file, so it compiles from any folder.
 
 !define APP_NAME "DeskAudit"
-!define APP_VERSION "12.12"
+!define APP_VERSION "12.13"
 ; Numeric quad for the PE version resource (VIProductVersion needs
 ; exactly X.X.X.X — APP_VERSION alternates between 2 and 3 parts,
 ; so keep the quad separate and update it with the version).
-!define APP_VERSION_NUM "12.12.0.0"
+!define APP_VERSION_NUM "12.13.0.0"
 !define APP_PUBLISHER "Firoza"
 !define APP_EXE "DeskAudit.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeskAudit"
@@ -138,10 +138,16 @@ SectionEnd
 
 Section "Uninstall"
   Call un.StopAgent
+  ; Remove the 9pm scheduled task (v12.13, M15): it pointed at the
+  ; deleted exe and fired daily, failing silently after uninstall.
+  ExecWait 'schtasks /delete /tn "DeskAudit Daily Summary" /f'
   ; Preserve the audit history: data/ (the whole database), reports/,
   ; backups/ and config.local.yaml (incl. the Gemini key) are the
   ; user's data, not the install — deleting them on uninstall used to
   ; wipe everything with no warning. Only remove what was installed.
+  ; v12.13 (B-m4): the exe used to disappear only as a side effect of
+  ; un.StopAgent — delete it explicitly.
+  Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\config.yaml"
   Delete "$INSTDIR\projects.yaml"
   Delete "$INSTDIR\schedule_summary.bat"

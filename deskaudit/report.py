@@ -41,6 +41,14 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
         p["goal_percent"] = round(100 * p["active_seconds"] / goal_seconds) if goal_seconds else 0
         p["goal_met"] = bool(goal_seconds and p["active_seconds"] >= goal_seconds)
     untagged = db.untagged_top(date, limit=5)
+    # Total untagged time across ALL untagged apps (v12.13 audit):
+    # the top-5 sum used to stand in for the total, so a 6th untagged
+    # app's time was silently dropped from the summary, the report
+    # and the untagged_spike alert.
+    try:
+        untagged_seconds = db.untagged_total(date)
+    except Exception:
+        untagged_seconds = sum(float(a.get("seconds", 0)) for a in untagged.get("apps", []))
     # Data transfers (organisation): counts by type + the latest rows.
     try:
         tcounts = db.transfer_counts(date)
@@ -93,6 +101,7 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
         "file_counts": files,
         "projects": project_rows,
         "untagged": untagged,
+        "untagged_seconds": float(untagged_seconds),
         "transfers": {
             "total": sum(c.get("count", 0) for c in tcounts.values()),
             "counts": tcounts,
@@ -102,6 +111,7 @@ def build_summary(db: Database, date: str, tagger=None) -> dict:
             "active_seconds": float(b_totals["active"] or 0),
             "productive_seconds": float(b_totals["productive"] or 0),
             "distracting_seconds": float(b_totals["distracting"] or 0),
+            "other_seconds": float(b_totals["other_seconds"] or 0),
             "domains_used": int(b_totals["domains"] or 0),
             "visits": db.browser_visit_count(date),
             "top_domains": b_domains[:10],
@@ -179,7 +189,9 @@ def render_text(summary: dict) -> str:
     if not summary.get("projects"):
         lines.append("  (no tagged activity recorded)")
     untagged = summary.get("untagged", {})
-    untagged_seconds = sum(a.get("seconds", 0) for a in untagged.get("apps", []))
+    # Full total, not the top-5 sum (v12.13).
+    untagged_seconds = float(summary.get("untagged_seconds") or 0) or sum(
+        a.get("seconds", 0) for a in untagged.get("apps", []))
     if untagged_seconds:
         lines.append(f"Untagged: {format_duration(untagged_seconds)} in apps — "
                      "run: python main.py --suggest-projects")

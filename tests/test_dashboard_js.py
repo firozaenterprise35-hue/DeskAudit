@@ -88,10 +88,12 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   await t.load();
   await t.loadSettings();
   const kpis = t.$('kpis').innerHTML;
-  check('16 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 16,
+  check('17 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 17,
     (kpis.match(/class="kpi"/g) || []).length + ' found');
+  check('other browser card', kpis.includes('Other (browser)'));
   check('hourly has 24 columns', (t.$('hourly').innerHTML.match(/class="col"/g) || []).length === 24);
   check('donut rendered', t.$('donut').innerHTML.includes('<svg'));
+  check('donut legend has other slice', t.$('donutLegend').innerHTML.includes('Other'));
   check('project bars rendered', t.$('projectBars').innerHTML.includes('Office'));
   check('app bars rendered', t.$('appBars').innerHTML.includes('WINWORD'));
   check('domain bars rendered', t.$('domainBars').innerHTML.includes('coursera.org'));

@@ -45,7 +45,6 @@ DEFAULT_DELETE_PROTECT = {
     "poll_seconds": 30,
     "mirror_max_mb": 500,  # mirror only files up to this size
     "quarantine_max_gb": 10,  # cap for the MIRROR only; held items never auto-purged
-    "mirror_retention_days": 30,
     "protected_folders": [],  # extra folders, beyond Desktop/Documents/sensitive
 }
 
@@ -578,10 +577,17 @@ class DeleteProtector:
         cap_warned = False
         # 1) Copy new / changed files into the mirror (budgeted).
         for folder in self.protected_folders:
+            if copied_files >= _MIRROR_MAX_FILES_PER_SCAN \
+                    or copied_bytes >= _MIRROR_MAX_BYTES_PER_SCAN:
+                break  # v12.13 (P7): the inner-loop break alone let the
+                # budget restart on the next folder; stop the whole scan.
             if not folder.is_dir():
                 continue
             try:
-                walk = list(folder.rglob("*"))
+                # v12.13 (P7): rglob is a lazy generator — do NOT wrap it
+                # in list(), which loaded the whole tree into memory on
+                # every 30 s scan.
+                walk = folder.rglob("*")
             except Exception:
                 continue
             for path in walk:
@@ -710,7 +716,11 @@ class DeleteProtector:
             try:
                 self._ensure_dirs()
                 max_mb = int(self.settings.get("mirror_max_mb", 500) or 500)
+                cap_bytes = int(self.settings.get("quarantine_max_gb", 10) or 10) * 1024 ** 3
                 if (dest.is_file() and dest.stat().st_size <= max_mb * 1024 * 1024
+                        # v12.13 (P7): also respect the TOTAL mirror cap,
+                        # not only the per-file cap.
+                        and self._mirror_total_bytes() + dest.stat().st_size <= cap_bytes
                         and not is_temp_path(str(dest), str(self.quarantine_root),
                                             str(self.project_root))):
                     mirror_name = self._mirror_name(dest)

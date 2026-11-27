@@ -134,8 +134,9 @@ def generate_daily_summary(db, date: str | None = None, tagger=None) -> dict:
     browser_lines.append(f"মোট ভিজিট {b['visits']}টি, ডোমেইন {b['domains_used']}টি।")
     sections.append({"title": "ব্রাউজার", "text": " ".join(browser_lines)})
 
-    # Untagged
-    untagged_seconds = sum(float(a.get("seconds", 0)) for a in s["untagged"].get("apps", []))
+    # Untagged — use the full total, not the top-5 sum (v12.13).
+    untagged_seconds = float(s.get("untagged_seconds") or 0) or sum(
+        float(a.get("seconds", 0)) for a in s["untagged"].get("apps", []))
     if untagged_seconds:
         sections.append({"title": "আনট্যাগড", "text": f"{format_duration(untagged_seconds)} সময় কোনো প্রজেক্টে ট্যাগ হয়নি।"})
         insights.append("আনট্যাগড সময় কমাতে `python main.py --suggest-projects` চালিয়ে রুল যোগ করুন।")

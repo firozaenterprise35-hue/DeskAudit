@@ -29,7 +29,6 @@ h2{font-size:16px;margin:0 0 12px} h3{font-size:14px;margin:0 0 8px}
 .hourly{display:flex;align-items:flex-end;gap:3px;height:130px;padding-top:8px}
 .hourly .col{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
 .hourly .bar{width:100%;background:var(--blue);border-radius:3px 3px 0 0;min-height:2px}
-.hourly .bar.browser{background:var(--teal)}
 .hourly .h{font-size:10px;color:var(--muted)}
 .progress{height:10px;background:#eef2f7;border-radius:6px;overflow:hidden}
 .progress>div{height:100%;background:var(--green)}
@@ -44,7 +43,11 @@ th{color:var(--muted);font-weight:600}
 .legend{font-size:13px;line-height:1.8}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
 #status{font-size:13px;color:var(--muted)}
-.setgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 16px;margin:8px 0}
+.setgrid,.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 16px;margin:8px 0}
+.settings-grid label{display:block;font-size:13px}
+.settings-grid label span{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
+.settings-grid input,.settings-grid select{width:100%}
+.settings-grid input[type=checkbox]{width:auto}
 .setgrid label{display:block;font-size:13px}
 .setgrid label span{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
 .setgrid input,.setgrid select{width:100%}
@@ -131,7 +134,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
 
   <section>
     <h2>⚙️ সেটিংস (Settings)</h2>
-    <p class="muted">Saved to <code>config.local.yaml</code> — <code>config.yaml</code> is never changed. Restart the agent and the dashboard for changes to take effect. The API key is never shown back.</p>
+    <p class="muted">Saved to <code>config.local.yaml</code> — <code>config.yaml</code> is never changed. Delete-protection settings apply within ~30 s; most other settings need the agent and the dashboard restarted. The API key is never shown back.</p>
     <h3>AI সামারি (LLM)</h3>
     <div class="setgrid">
       <label><span>Provider</span><select id="set_llm_provider"><option value="gemini">gemini (Google AI Studio)</option><option value="openai">openai (ChatGPT)</option><option value="anthropic">anthropic (Claude)</option></select></label>
@@ -156,7 +159,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
     <div class="setgrid">
       <label><input id="set_gate_enabled" type="checkbox"> Secret gate enabled</label>
       <label><span>Desktop clicks (2–8)</span><input id="set_gate_clicks" type="number" min="2" max="8"></label>
-      <label><span>Code (1–8 digits)</span><input id="set_gate_code" type="text" inputmode="numeric" autocomplete="off"></label>
+      <label><span>Code (1–8 digits) — বদলাতে নতুন কোড লিখুন, খালি রাখলে আগেরটাই থাকবে</span><input id="set_gate_code" type="password" inputmode="numeric" autocomplete="off" placeholder="নতুন কোড (খালি = আগেরটা)"></label>
     </div>
     <h3>অ্যালার্ট (Alerts)</h3>
     <div class="setgrid">
@@ -166,6 +169,12 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><span>Idle minutes (1–1440)</span><input id="set_idle_minutes" type="number" min="1" max="1440"></label>
       <label><span>Large download MB (1–100000)</span><input id="set_large_download_mb" type="number" min="1" max="100000"></label>
       <label><span>New app min minutes (0–1440)</span><input id="set_new_app_min_minutes" type="number" min="0" max="1440"></label>
+      <label><span>ডিলিটের ঝাঁক — কয়টি ফাইল (1–100)</span><input id="set_deletion_burst_count" type="number" min="1" max="100"></label>
+      <label><span>ডিলিটের ঝাঁক — কত মিনিটে (1–1440)</span><input id="set_deletion_burst_minutes" type="number" min="1" max="1440"></label>
+      <label><span>এক ফোল্ডারে কয়টি ডিলিট (1–100)</span><input id="set_deletion_folder_count" type="number" min="1" max="100"></label>
+      <label><span>রাত শুরু (ঘণ্টা, 0–23)</span><input id="set_night_start_hour" type="number" min="0" max="23"></label>
+      <label><span>রাত শেষ (ঘণ্টা, 0–23)</span><input id="set_night_end_hour" type="number" min="0" max="23"></label>
+      <label><span>নিরাপদ অ্যাপ (কমা দিয়ে আলাদা করুন — এগুলো নতুন অ্যাপ হিসেবে অ্যালার্ট দেবে না)</span><input id="set_known_safe_apps" type="text" placeholder="chrome.exe, code.exe"></label>
       <label><input id="set_alerts_enabled" type="checkbox"> Alerts enabled</label>
       <label><input id="set_alerts_notify" type="checkbox"> Windows notification</label>
     </div>
@@ -211,7 +220,6 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><span>Scan interval (seconds, 10–600)</span><input id="set_deleteprotect_poll_seconds" type="number" min="10" max="600"></label>
       <label><span>মিরর করবে সর্বোচ্চ কত বড় ফাইল (MB, 1–100000)</span><input id="set_deleteprotect_mirror_max_mb" type="number" min="1" max="100000"></label>
       <label><span>মিররের সর্বোচ্চ সাইজ (GB, 1–1000)</span><input id="set_deleteprotect_quarantine_max_gb" type="number" min="1" max="1000"></label>
-      <label><span>মিররের কপি কতদিন রাখবে (1–365)</span><input id="set_deleteprotect_mirror_retention_days" type="number" min="1" max="365"></label>
       <label><span>অতিরিক্ত সুরক্ষিত ফোল্ডার (কমা দিয়ে আলাদা করুন)</span><input id="set_deleteprotect_protected_folders" type="text" placeholder="D:/Accounts"></label>
     </div>
     <h3>📂 ফাইল এক্সপ্লোরার (File explorer)</h3>
@@ -323,7 +331,8 @@ function render(){
     ['Apps used',k.apps_used,'distinct apps'],
     ['Browser',fmt(k.browser_seconds),k.visits+' visits'],
     ['Productive (browser)',fmt(k.productive_seconds),k.productive_percent+'% of browser time'],
-    ['Distracting (browser)',fmt(k.distracting_seconds),''],
+    ['Distracting (browser)',fmt(k.distracting_seconds),'known-distracting sites only — unlisted sites count as Other'],
+    ['Other (browser)',fmt(k.other_seconds),'unlisted sites — neither productive nor distracting'],
     ['Projects worked',k.projects_worked,k.goals_met+' / '+k.goals_total+' goals met'],
     ['File events',k.file_events,'created / modified / deleted / moved'],
     ['Visits',k.visits,'browser visits'],
@@ -340,11 +349,12 @@ function render(){
   // Hourly
   const maxH=Math.max(1,...s.hourly.map(h=>h.active_minutes));
   $('hourly').innerHTML=s.hourly.map(h=>`<div class="col"><div class="bar" style="height:${Math.max(2,Math.round(100*h.active_minutes/maxH))}%" title="${h.hour}:00 — ${h.active_minutes} active min, ${h.browser_minutes} browser min"></div><span class="h">${h.hour}</span></div>`).join('');
-  // Donut productive vs distracting
-  const p=s.browser.productive_seconds||0, d=s.browser.distracting_seconds||0, tot=p+d||1;
-  const pp=Math.round(100*p/tot);
-  $('donut').innerHTML=`<svg width="140" height="140" viewBox="0 0 42 42"><circle cx="21" cy="21" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="6"/><circle cx="21" cy="21" r="15.9" fill="none" stroke="#16a34a" stroke-width="6" stroke-dasharray="${pp} ${100-pp}" stroke-dashoffset="25" transform="rotate(0 21 21)"/><text x="21" y="22" text-anchor="middle" font-size="7" font-weight="bold">${pp}%</text><text x="21" y="28" text-anchor="middle" font-size="4" fill="#6b7280">productive</text></svg>`;
-  $('donutLegend').innerHTML=`<div><span class="badge green">Productive</span> ${fmt(p)}</div><div><span class="badge amber">Distracting</span> ${fmt(d)}</div><div class="muted">Browser time only. App time is counted separately above.</div>`;
+  // Donut productive vs distracting vs other (v12.13: unlisted
+  // sites are a neutral third slice, not "distracting").
+  const p=s.browser.productive_seconds||0, d=s.browser.distracting_seconds||0, o=s.browser.other_seconds||0, tot=p+d+o||1;
+  const pp=Math.round(100*p/tot), dp=Math.round(100*d/tot);
+  $('donut').innerHTML=`<svg width="140" height="140" viewBox="0 0 42 42"><circle cx="21" cy="21" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="6"/><circle cx="21" cy="21" r="15.9" fill="none" stroke="#f59e0b" stroke-width="6" stroke-dasharray="${dp} ${100-dp}" stroke-dashoffset="${25-pp}" transform="rotate(0 21 21)"/><circle cx="21" cy="21" r="15.9" fill="none" stroke="#16a34a" stroke-width="6" stroke-dasharray="${pp} ${100-pp}" stroke-dashoffset="25" transform="rotate(0 21 21)"/><text x="21" y="22" text-anchor="middle" font-size="7" font-weight="bold">${pp}%</text><text x="21" y="28" text-anchor="middle" font-size="4" fill="#6b7280">productive</text></svg>`;
+  $('donutLegend').innerHTML=`<div><span class="badge green">Productive</span> ${fmt(p)}</div><div><span class="badge amber">Distracting</span> ${fmt(d)}</div><div><span class="badge">Other</span> ${fmt(o)}</div><div class="muted">Browser time only. App time is counted separately above.</div>`;
   // Projects
   const maxP=Math.max(1,...s.projects.map(x=>x.active_seconds));
   $('projectBars').innerHTML=s.projects.length?s.projects.map(x=>{const goal=x.goal_minutes?` — goal ${fmt(x.goal_minutes*60)} (${x.goal_percent}%)${x.goal_met?' ✓':''}`:'';return `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span><b>${esc(x.project)}</b>${esc(goal)}</span><span>${fmt(x.active_seconds)}</span></div><div class="progress"><div style="width:${Math.min(100,x.goal_minutes?x.goal_percent:Math.round(100*x.active_seconds/maxP))}%"></div></div><div class="muted">app ${fmt(x.app_seconds)} · browser ${fmt(x.browser_seconds)} · ${x.file_events} files · ${x.visits} visits</div></div>`}).join(''):'<p class="muted">No tagged activity yet.</p>';
@@ -412,13 +422,19 @@ async function loadSettings(){
   setChk('set_browser_receiver_enabled',s.agent.browser_receiver_enabled);
   setChk('set_dashboard_on_start',s.agent.dashboard_on_start);
   setChk('set_dashboard_lock',s.agent.dashboard_lock);
-  if(s.secret_gate){ setChk('set_gate_enabled',s.secret_gate.enabled); setNum('set_gate_clicks',s.secret_gate.clicks); $('set_gate_code').value=s.secret_gate.code||''; }
+  if(s.secret_gate){ setChk('set_gate_enabled',s.secret_gate.enabled); setNum('set_gate_clicks',s.secret_gate.clicks); $('set_gate_code').value=''; $('set_gate_code').placeholder=s.secret_gate.code_set?'কোড সেট করা আছে (খালি = আগেরটা)':'নতুন কোড লিখুন'; }
   setNum('set_distracting_minutes',s.alerts.distracting_minutes);
   setNum('set_untagged_minutes',s.alerts.untagged_minutes);
   setNum('set_untagged_percent',s.alerts.untagged_percent);
   setNum('set_idle_minutes',s.alerts.idle_minutes);
   setNum('set_large_download_mb',s.alerts.large_download_mb);
   setNum('set_new_app_min_minutes',s.alerts.new_app_min_minutes);
+  setNum('set_deletion_burst_count',s.alerts.deletion_burst_count);
+  setNum('set_deletion_burst_minutes',s.alerts.deletion_burst_minutes);
+  setNum('set_deletion_folder_count',s.alerts.deletion_folder_count);
+  setNum('set_night_start_hour',s.alerts.night_start_hour);
+  setNum('set_night_end_hour',s.alerts.night_end_hour);
+  const ksa=$('set_known_safe_apps'); if(ksa) ksa.value=(s.alerts.known_safe_apps||[]).join(', ');
   setChk('set_alerts_enabled',s.alerts.enabled);
   setChk('set_alerts_notify',s.alerts.notify);
   setNum('set_backup_keep_days',s.backup.backup_keep_days);
@@ -458,7 +474,6 @@ async function loadSettings(){
     setNum('set_deleteprotect_poll_seconds',s.delete_protect.poll_seconds);
     setNum('set_deleteprotect_mirror_max_mb',s.delete_protect.mirror_max_mb);
     setNum('set_deleteprotect_quarantine_max_gb',s.delete_protect.quarantine_max_gb);
-    setNum('set_deleteprotect_mirror_retention_days',s.delete_protect.mirror_retention_days);
     $('set_deleteprotect_protected_folders').value=(s.delete_protect.protected_folders||[]).join(', ');
   }
   if(s.explorer){
@@ -489,7 +504,8 @@ async function loadSettings(){
 }
 async function saveSettings(){
   if(!state.settingsLoaded){ $('setStatus').textContent='Settings have not loaded yet — please wait.'; return; }
-  const num=id=>{const v=parseInt($(id).value,10); return Number.isFinite(v)?v:null};
+  const emptyNums=[];
+  const num=id=>{const el=$(id); const v=parseInt(el.value,10); if(!Number.isFinite(v)){ if(el && el.value.trim()==='') emptyNums.push(id); return null; } return v};
   const updates={llm:{provider:$('set_llm_provider').value},agent:{},alerts:{},backup:{}};
   const model=$('set_llm_model').value.trim();
   if(model) updates.llm.model=model;  // empty model must not be sent (the API rejects it)
@@ -498,7 +514,7 @@ async function saveSettings(){
   else if(key) updates.llm.api_key=key;
   const ints={poll_interval_seconds:'set_poll_interval_seconds',idle_threshold_seconds:'set_idle_threshold_seconds',browser_poll_seconds:'set_browser_poll_seconds',browser_receiver_port:'set_browser_receiver_port'};
   for(const [k,id] of Object.entries(ints)){const v=num(id); if(v!==null) updates.agent[k]=v}
-  const alertInts={distracting_minutes:'set_distracting_minutes',untagged_minutes:'set_untagged_minutes',untagged_percent:'set_untagged_percent',idle_minutes:'set_idle_minutes',large_download_mb:'set_large_download_mb',new_app_min_minutes:'set_new_app_min_minutes'};
+  const alertInts={distracting_minutes:'set_distracting_minutes',untagged_minutes:'set_untagged_minutes',untagged_percent:'set_untagged_percent',idle_minutes:'set_idle_minutes',large_download_mb:'set_large_download_mb',new_app_min_minutes:'set_new_app_min_minutes',deletion_burst_count:'set_deletion_burst_count',deletion_burst_minutes:'set_deletion_burst_minutes',deletion_folder_count:'set_deletion_folder_count',night_start_hour:'set_night_start_hour',night_end_hour:'set_night_end_hour'};
   for(const [k,id] of Object.entries(alertInts)){const v=num(id); if(v!==null) updates.alerts[k]=v}
   const backupInts={backup_keep_days:'set_backup_keep_days',backup_keep_count:'set_backup_keep_count'};
   for(const [k,id] of Object.entries(backupInts)){const v=num(id); if(v!==null) updates.backup[k]=v}
@@ -515,6 +531,7 @@ async function saveSettings(){
   updates.secret_gate={enabled:$('set_gate_enabled').checked};
   const clicks=parseInt($('set_gate_clicks').value,10); if(Number.isFinite(clicks)) updates.secret_gate.clicks=clicks;
   const code=$('set_gate_code').value.trim(); if(code) updates.secret_gate.code=code;
+  updates.alerts.known_safe_apps=$('set_known_safe_apps').value;
   updates.alerts.enabled=$('set_alerts_enabled').checked;
   updates.alerts.notify=$('set_alerts_notify').checked;
   updates.backup.backup_on_start=$('set_backup_on_start').checked;
@@ -531,7 +548,7 @@ async function saveSettings(){
   updates.delete_protect={enabled:$('set_deleteprotect_enabled').checked};
   updates.delete_protect.quarantine_path=$('set_deleteprotect_quarantine_path').value;
   updates.delete_protect.protected_folders=$('set_deleteprotect_protected_folders').value;
-  const dpInts={poll_seconds:'set_deleteprotect_poll_seconds',mirror_max_mb:'set_deleteprotect_mirror_max_mb',quarantine_max_gb:'set_deleteprotect_quarantine_max_gb',mirror_retention_days:'set_deleteprotect_mirror_retention_days'};
+  const dpInts={poll_seconds:'set_deleteprotect_poll_seconds',mirror_max_mb:'set_deleteprotect_mirror_max_mb',quarantine_max_gb:'set_deleteprotect_quarantine_max_gb'};
   for(const [k,id] of Object.entries(dpInts)){const v=num(id); if(v!==null) updates.delete_protect[k]=v}
   updates.explorer={enabled:$('set_explorer_enabled').checked};
   updates.explorer.hidden_path=$('set_explorer_hidden_path').value;
@@ -551,7 +568,7 @@ async function saveSettings(){
   $('setStatus').textContent='Saving…';
   try{
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)}).then(x=>x.json());
-    if(r.ok){ $('setStatus').textContent='✅ Saved to config.local.yaml. Restart the agent and dashboard to apply.'; $('set_llm_api_key').value=''; $('set_llm_clear_key').checked=false; $('set_telegram_bot_token').value=''; $('set_telegram_clear_token').checked=false; $('set_email_smtp_password').value=''; $('set_email_clear_password').checked=false; loadSettings(); }
+    if(r.ok){ $('setStatus').textContent='✅ Saved to config.local.yaml.' + (emptyNums.length ? ' খালি সংখ্যার ঘরগুলো আগের মানেই আছে: '+emptyNums.join(', ') : ' Delete-protection settings apply within ~30 s; restart the agent and dashboard for the rest.'); $('set_llm_api_key').value=''; $('set_llm_clear_key').checked=false; $('set_telegram_bot_token').value=''; $('set_telegram_clear_token').checked=false; $('set_email_smtp_password').value=''; $('set_email_clear_password').checked=false; loadSettings(); }
     else $('setStatus').textContent='❌ '+(r.error||'Could not save.');
   }catch(e){ $('setStatus').textContent='❌ Could not save settings.'; }
 }

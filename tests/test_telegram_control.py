@@ -98,6 +98,45 @@ class _FakePsutil:
         return list(self._procs)
 
 
+def test_find_processes_exact_match():
+    # v12.13 (C1): substring matching let "/close vchost" match
+    # svchost.exe and "/close e" match chrome.exe, bypassing the
+    # system-process protection. Only exact exe names match now.
+    procs = [_FakeProc(101, "svchost.exe"), _FakeProc(102, "explorer.exe"),
+             _FakeProc(201, "chrome.exe"), _FakeProc(203, "notepad.exe")]
+    old_psutil = sys.modules.get("psutil")
+    sys.modules["psutil"] = _FakePsutil(procs)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot, _ = _make_bot(tmp, db)
+            try:
+                found, err = bot.find_processes("vchost")
+                assert found == [] and "⛔" in err, (found, err)
+                found, err = bot.find_processes("xplorer")
+                assert found == [] and "⛔" in err, (found, err)
+                found, err = bot.find_processes("e")
+                assert found == [] and err, (found, err)
+                found, err = bot.find_processes("svchost")
+                assert found == [] and "⛔" in err, (found, err)
+                found, err = bot.find_processes("chrome")
+                assert [p.pid for p in found] == [201] and err == "", (found, err)
+                found, err = bot.find_processes("CHROME.EXE")
+                assert [p.pid for p in found] == [201], (found, err)
+                found, err = bot.find_processes("notepad.exe")
+                assert [p.pid for p in found] == [203], (found, err)
+                found, err = bot.find_processes("chrom")
+                assert found == [] and err == "", (found, err)
+            finally:
+                db.close()
+    finally:
+        if old_psutil is None:
+            sys.modules.pop("psutil", None)
+        else:
+            sys.modules["psutil"] = old_psutil
+    print("find processes exact match passed")
+
+
 def test_browser_command():
     with tempfile.TemporaryDirectory() as tmp:
         db, day = _seed_db(os.path.join(tmp, "t.db"))
@@ -250,6 +289,7 @@ def test_db_browser_getters():
 
 
 if __name__ == "__main__":
+    test_find_processes_exact_match()
     test_browser_command()
     test_browser_close_confirm()
     test_windows_only_commands()

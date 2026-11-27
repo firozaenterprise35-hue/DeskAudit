@@ -718,7 +718,7 @@ def build_deleted_text(db, day: str | None = None) -> str:
             verb = "পারমেনেন্টলি মোছা" if row["status"] == "purged" else "ফিরিয়ে দেওয়া"
             lines.append(f"  • #{row['id']} {row['file_name']} — {verb}")
     lines.append("")
-    lines.append("হ্যাঁ/না চাপতে হয় ফাইলটি ডিলিট হওয়ার মেসেজের বোতামে।")
+    lines.append("নিচের বোতামে সিদ্ধান্ত নিন — ✅ পারমেনেন্টলি মোছা, ↩️ ফিরিয়ে দেওয়া।")
     return "\n".join(lines)
 
 
@@ -901,10 +901,11 @@ def build_search_text(db, day: str, query: str) -> str:
 
 
 HELP_TEXT = (
-    "👋 DeskAudit বট — সব কমান্ড (/menu-তেও বোতাম আছে):\n"
+    "👋 DeskAudit বট — সব কমান্ড (বেশিরভাগের /menu-তে বোতাম আছে; "
+    "/unfreeze আর /browser block|unblock লিখে দিতে হয়):\n"
     "📊 দেখা:\n"
     "  /status /today /week /apps /projects /transfers /alerts /files\n"
-    "  🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন>\n"
+    "  🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন> | /browser unblock <ডোমেইন>\n"
     "  📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
     "  🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
     "  📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
@@ -916,9 +917,9 @@ HELP_TEXT = (
     "  ⬜ /screen white | /screen black | /screen off — স্ক্রিন ঢাকা/খোলা\n"
     "  🔒 /lock — কম্পিউটার লক করা\n"
     "  ❌ /close <অ্যাপ> — চলমান অ্যাপ বন্ধ (নিশ্চিতকরণ লাগবে)\n"
-    "  🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze — আবার চালু\n"
+    "  🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze <অ্যাপ> — আবার চালু\n"
     "  ⏸ /pause — অডিট বন্ধ | ▶️ /resume — আবার চালু\n"
-    "  🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ | /unmute — আবার চালু\n"
+    "  🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ (সময় না দিলে চিরদিনের জন্য) | /unmute — আবার চালু\n"
     "  🕐 /digest <মিনিট|off> — ডাইজেস্টের সময় বদলানো\n"
     "  🎯 /goal <প্রজেক্ট> <মিনিট> — দৈনিক লক্ষ্য বদলানো\n"
     "💾 ডেটা ও PC:\n"
@@ -1280,8 +1281,14 @@ class TelegramBot:
         return name if name.endswith(".exe") else (name + ".exe" if name else "")
 
     def find_processes(self, app: str) -> tuple[list, str]:
-        """Live processes whose exe name matches `app` (substring,
-        case-insensitive). Returns (procs, error)."""
+        """Live processes whose exe name matches `app` EXACTLY
+        (case-insensitive, ".exe" optional). Returns (procs, error).
+
+        Exact matching only (v12.13 audit): the old substring match
+        let "/close vchost" match svchost.exe and "/close e" match
+        chrome.exe, bypassing the system-process protection entirely
+        — the confirmation step re-ran the same matcher, so it did
+        not close the hole either."""
         try:
             import psutil
         except Exception:
@@ -1289,13 +1296,19 @@ class TelegramBot:
         want = self._norm_app(app)
         if not want:
             return [], "অ্যাপের নাম দিন — যেমন /close chrome"
-        if want in self._PROTECTED_APPS:
-            return [], f"⛔ {want} বন্ধ করা যাবে না — সিস্টেমের জরুরি প্রসেস।"
+        stem = want[:-4] if want.endswith(".exe") else want
+        if len(stem) < 3:
+            return [], "অ্যাপের নাম খুব ছোট — পুরো নাম দিন, যেমন /close chrome"
+        for prot in self._PROTECTED_APPS:
+            pstem = prot[:-4] if prot.endswith(".exe") else prot
+            if want == prot or stem == pstem or stem in pstem or pstem in stem:
+                return [], f"⛔ {want} বন্ধ করা যাবে না — সিস্টেমের জরুরি প্রসেস।"
         found = []
         try:
             for proc in psutil.process_iter(["pid", "name"]):
                 try:
-                    if want in (proc.info.get("name") or "").lower():
+                    name = (proc.info.get("name") or "").lower()
+                    if name == want or name == stem:
                         found.append(proc)
                 except Exception:
                     continue
@@ -1585,10 +1598,26 @@ class TelegramBot:
         return f"🌐 সব ব্রাউজার বন্ধ করা হয়েছে ({closed}/{total}টি প্রসেস)।"
 
     def request_block(self, domain: str) -> None:
+        # Validate BEFORE asking (v12.13, T6): the old code asked
+        # "নিশ্চিত?" for any raw string and only failed in _do_block.
+        try:
+            domain = _norm_domain(domain)
+            if not domain or "." not in domain:
+                raise ValueError("সঠিক ডোমেইন দিন — যেমন facebook.com")
+        except ValueError as exc:
+            self.send(f"🌐 {exc}")
+            return
         self._ask_confirm(f"🌐 {domain} এই PC-তে ব্লক করব?",
                           "block", {"domain": domain})
 
     def request_unblock(self, domain: str) -> None:
+        try:
+            domain = _norm_domain(domain)
+            if not domain or "." not in domain:
+                raise ValueError("সঠিক ডোমেইন দিন — যেমন facebook.com")
+        except ValueError as exc:
+            self.send(f"🌐 {exc}")
+            return
         self._ask_confirm(f"🌐 {domain}-এর ব্লক তুলে দেব?",
                           "unblock", {"domain": domain})
 
@@ -1690,6 +1719,55 @@ class TelegramBot:
             self.db.set_state("telegram_pending", "")
         except Exception:
             pass
+
+    # -- per-file delete decisions (v12.13, M9) ----------------------
+    def _set_delete_pending(self, qid: int) -> str:
+        """One pending decision per quarantined file, keyed by qid.
+        The old single `telegram_pending` slot meant a second delete
+        overwrote the first file's decision — its ✅/↩️ buttons then
+        answered 'এই নিশ্চিতকরণটি আর কার্যকর নয়' and the file sat in
+        quarantine with no remote action at all. Each file's buttons
+        now carry their own token, independent of other deletes."""
+        import secrets
+
+        token = secrets.token_hex(4)
+        store = self._delete_pending_store()
+        store[str(qid)] = {"token": token,
+                           "expires": time.time() + self._PENDING_TTL}
+        try:
+            self.db.set_state("telegram_pending_delete", json.dumps(store))
+        except Exception:
+            pass
+        return token
+
+    def _delete_pending_store(self) -> dict:
+        try:
+            raw = self.db.get_state("telegram_pending_delete") if self.db else ""
+            store = json.loads(raw) if raw else {}
+        except Exception:
+            store = {}
+        if not isinstance(store, dict):
+            return {}
+        now = time.time()
+        return {k: v for k, v in store.items()
+                if isinstance(v, dict) and now < float(v.get("expires", 0))}
+
+    def _get_delete_pending(self, qid: int) -> dict | None:
+        return self._delete_pending_store().get(str(qid))
+
+    def _clear_delete_pending(self, qid: int) -> None:
+        store = self._delete_pending_store()
+        if str(qid) in store:
+            del store[str(qid)]
+            try:
+                self.db.set_state("telegram_pending_delete", json.dumps(store))
+            except Exception:
+                pass
+        # A text "হ্যাঁ" after this must not re-fire the same file.
+        pending = self._get_pending()
+        if (pending is not None and pending.get("action") == "delete_protect"
+                and int((pending.get("args") or {}).get("qid") or 0) == int(qid)):
+            self._clear_pending()
 
     def _run_pending(self, token: str | None = None,
                      *, from_button: bool = False) -> str:
@@ -1827,15 +1905,48 @@ class TelegramBot:
         qid = int(item.get("id") or 0)
         if not qid:
             return False
-        token = self._set_pending("delete_protect", {"qid": qid})
+        # Per-file pending for THESE buttons (independent of other
+        # deletes), plus the single slot so a typed "হ্যাঁ"/"না" still
+        # answers the latest delete (v12.13, M9).
+        token = self._set_delete_pending(qid)
+        self._set_pending("delete_protect", {"qid": qid})
         markup = {"inline_keyboard": [[
-            {"text": "✅ হ্যাঁ, ডিলিট করো", "callback_data": f"confirm:yes:{token}"},
-            {"text": "↩️ না, ফিরিয়ে দাও", "callback_data": f"confirm:no:{token}"},
+            {"text": "✅ হ্যাঁ, ডিলিট করো", "callback_data": f"dq:yes:{qid}:{token}"},
+            {"text": "↩️ না, ফিরিয়ে দাও", "callback_data": f"dq:no:{qid}:{token}"},
         ]]}
         return self.send_markup(
             build_delete_text(item) + "\n\n(৫ মিনিটের মধ্যে সিদ্ধান্ত নিন — "
             "না জানালে ফাইলটা সুরক্ষায়ই থাকবে।)",
             markup)
+
+    def send_deleted_list(self) -> None:
+        """Send /deleted with a ✅/↩️ button pair per held file
+        (v12.13, M9): before this, /deleted was plain text — a file
+        whose 5-minute decision window had passed could not be
+        decided from Telegram at all. Each row gets a fresh per-file
+        pending, so the buttons work even long after the delete."""
+        from .utils import today_str
+
+        day = today_str()
+        try:
+            held = self.db.quarantined_held(limit=10)
+        except Exception:
+            held = []
+        keyboard = []
+        for row in held:
+            qid = int(row["id"])
+            token = self._set_delete_pending(qid)
+            keyboard.append([
+                {"text": f"✅ #{qid} {row['file_name'][:24]}",
+                 "callback_data": f"dq:yes:{qid}:{token}"},
+                {"text": "↩️ ফিরিয়ে দাও",
+                 "callback_data": f"dq:no:{qid}:{token}"},
+            ])
+        text = build_deleted_text(self.db, day)
+        if keyboard:
+            self.send_markup(text, {"inline_keyboard": keyboard})
+        else:
+            self.send_long(text)
 
     def _do_delete_purge(self, qid: int) -> str:
         if self.delete_protector is None:
@@ -2607,7 +2718,7 @@ class TelegramBot:
         elif cmd == "/transfers":
             self.send_long(build_transfers_text(self.db, day))
         elif cmd == "/deleted":
-            self.send_long(build_deleted_text(self.db, day))
+            self.send_deleted_list()
         elif cmd == "/explore":
             self.explore_open(" ".join(args) if args else None)
         elif cmd == "/hidden":
@@ -2620,7 +2731,13 @@ class TelegramBot:
             if not args:
                 self.send("🔎 /search-এর পরে শব্দ দিন — যেমন /search রিপোর্ট")
             else:
-                self.send_long(build_search_text(self.db, day, " ".join(args)))
+                # A DB error here used to fail silently (v12.13, T7):
+                # build_search_text had no try/except, the error only
+                # reached poll_commands' catch, and the owner got no reply.
+                try:
+                    self.send_long(build_search_text(self.db, day, " ".join(args)))
+                except Exception as exc:
+                    self.send(f"🔎 খোঁজা যায়নি: {exc}")
         elif cmd == "/report":
             self.send_report(day)
         elif cmd in ("/screenshot", "/shot"):
@@ -2647,7 +2764,10 @@ class TelegramBot:
                 from .screen_blank import blank_status
 
                 current = blank_status()
-                state = f"এখন {current} আছে" if current else "এখন খোলা আছে"
+                # T5: the raw "white"/"black" value used to leak into
+                # the Bengali reply ("স্ক্রিন এখন white আছে") — map it.
+                state = {"white": "সাদা ঢাকা", "black": "কালো ঢাকা"}.get(current)
+                state = f"এখন {state} আছে" if state else "এখন খোলা আছে"
                 self.send(f"⬜ স্ক্রিন {state}। বদলাতে: /screen white, /screen black অথবা /screen off")
             elif args[0].lower() in ("white", "সাদা"):
                 self.send(self.set_screen("white"))
@@ -2735,6 +2855,30 @@ class TelegramBot:
 
         answer_callback(self.token, callback_query_id)
         day = today_str()
+        if data.startswith("dq:"):
+            # dq:yes:<qid>:<token> / dq:no:<qid>:<token> — a decision
+            # on ONE quarantined file (v12.13, M9). Each file's
+            # buttons carry their own token, so a second delete never
+            # kills the first file's buttons.
+            bits = data.split(":")
+            verdict = bits[1] if len(bits) > 1 else ""
+            try:
+                qid = int(bits[2]) if len(bits) > 2 else 0
+            except ValueError:
+                qid = 0
+            token = bits[3] if len(bits) > 3 else None
+            pending = self._get_delete_pending(qid) if qid else None
+            if pending is None or pending.get("token") != token:
+                self.send("⌛ এই নিশ্চিতকরণটি আর কার্যকর নয় — /deleted লিখে আবার দেখুন।")
+            else:
+                self._clear_delete_pending(qid)
+                if verdict == "yes":
+                    self.send(self._do_delete_purge(qid))
+                elif verdict == "no":
+                    self.send(self._do_delete_restore(qid))
+                else:
+                    self.send("❓ অচেনা বোতাম — /help লিখুন।")
+            return
         if data.startswith("confirm:"):
             # confirm:yes:<token> / confirm:no:<token> — the token must
             # match the pending action, or this is a stale button.
@@ -2779,7 +2923,7 @@ class TelegramBot:
             elif cmd == "transfers":
                 self.send_long(build_transfers_text(self.db, day))
             elif cmd == "deleted":
-                self.send_long(build_deleted_text(self.db, day))
+                self.send_deleted_list()
             elif cmd == "explore":
                 self.show_explorer()
             elif cmd == "hidden":
@@ -2853,7 +2997,10 @@ class TelegramBot:
                     "এক চাপে কিছু মুছবে না।)",
                     menu_keyboard())
             elif cmd == "noop":
-                pass  # a section label — nothing to do
+                # v12.13: intentionally silent — a button that does
+                # nothing (e.g. a disabled-looking row). Without this
+                # branch the tap fell into the "unknown button" reply.
+                pass
             elif cmd == "help":
                 self.send(HELP_TEXT)
             else:
@@ -2868,9 +3015,20 @@ class TelegramBot:
         and inline-button taps (callback_query)."""
         if not self.configured:
             return 0
+        # A corrupt offset used to brick polling forever (v12.13, T8):
+        # int() raised on every poll, only a log line, no self-heal.
         try:
-            offset = self.db.get_state("telegram_update_offset")
-            updates = get_updates(self.token, int(offset) if offset else None)
+            offset_raw = self.db.get_state("telegram_update_offset")
+            offset = int(offset_raw) if offset_raw else None
+        except (TypeError, ValueError):
+            self.log.warning("Telegram offset was corrupt — resetting it.")
+            try:
+                self.db.set_state("telegram_update_offset", "")
+            except Exception:
+                pass
+            offset = None
+        try:
+            updates = get_updates(self.token, offset)
         except Exception as exc:
             self.log.warning("Telegram poll failed: %s", exc)
             return 0

@@ -75,9 +75,16 @@ def test_db_retag_and_report():
                          "Python Course", now, project=project, tags=tags)
     # Retag: chrome session title "Coursera - Python" has no rule, so it stays
     # Untagged; the Word session should already be Office via retag too.
+    # v12.13 (C-m9): counts are rows whose project/tags ACTUALLY changed —
+    # the old SQLite rowcount counted matched rows even when nothing
+    # changed, so the chrome session (Untagged -> Untagged) no longer
+    # counts. Only the Word session changes here.
     counts = db.retag_all(t, date=now.strftime("%Y-%m-%d"))
-    assert counts["app_sessions"] == 2, counts
+    assert counts["app_sessions"] == 1, counts
     assert counts["file_events"] == 1, counts
+    # A second retag changes nothing at all (idempotent).
+    counts2 = db.retag_all(t, date=now.strftime("%Y-%m-%d"))
+    assert all(v == 0 for v in counts2.values()), counts2
 
     date = now.strftime("%Y-%m-%d")
     summary = build_summary(db, date, tagger=t)

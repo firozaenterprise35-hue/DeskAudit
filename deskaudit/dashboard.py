@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -177,8 +178,8 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
     # Untagged time is the APP time that has no project. Browser time is
     # a subset of app time (Chrome is an app), so adding domains on top
     # would double-count it. (Matches the narrative + report, which use
-    # apps only.)
-    untagged_seconds = sum(
+    # apps only.) Use the full total, not the top-5 sum (v12.13, M4).
+    untagged_seconds = float(summary.get("untagged_seconds") or 0) or sum(
         float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", [])
     )
     tsum = transfer_summary(db, day)
@@ -203,7 +204,8 @@ def dashboard_summary(db: Database, day: str, tagger=None) -> dict:
             "browser_seconds": summary["browser"]["active_seconds"],
             "productive_seconds": productive,
             "distracting_seconds": distracting,
-            "productive_percent": round(100 * productive / (productive + distracting)) if (productive + distracting) else 0,
+            "other_seconds": float(summary["browser"].get("other_seconds") or 0),
+            "productive_percent": round(100 * productive / summary["browser"]["active_seconds"]) if summary["browser"]["active_seconds"] else 0,
             "projects_worked": len(projects),
             "goals_met": goals_met,
             "goals_total": goals_total,
@@ -309,6 +311,7 @@ def range_summary(db: Database, days: int = 7, end: str | None = None,
             "browser_seconds": s["browser"]["active_seconds"],
             "productive_seconds": s["browser"]["productive_seconds"],
             "distracting_seconds": s["browser"]["distracting_seconds"],
+            "other_seconds": s["browser"].get("other_seconds") or 0,
             "visits": s["browser"]["visits"],
             "file_events": sum(s["file_counts"].values()),
             "projects": len(s["projects"]),
@@ -334,6 +337,11 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("alerts", "idle_minutes"): (1, 1440),
     ("alerts", "large_download_mb"): (1, 100000),
     ("alerts", "new_app_min_minutes"): (0, 1440),
+    ("alerts", "deletion_burst_count"): (1, 100),
+    ("alerts", "deletion_burst_minutes"): (1, 1440),
+    ("alerts", "deletion_folder_count"): (1, 100),
+    ("alerts", "night_start_hour"): (0, 23),
+    ("alerts", "night_end_hour"): (0, 23),
     ("backup", "backup_keep_days"): (1, 365),
     ("backup", "backup_keep_count"): (1, 1000),
     ("secret_gate", "clicks"): (2, 8),
@@ -350,7 +358,6 @@ _INT_SETTINGS: dict[tuple[str, str], tuple[int, int]] = {
     ("delete_protect", "poll_seconds"): (10, 600),
     ("delete_protect", "mirror_max_mb"): (1, 100000),
     ("delete_protect", "quarantine_max_gb"): (1, 1000),
-    ("delete_protect", "mirror_retention_days"): (1, 365),
     ("explorer", "page_size"): (5, 50),
     ("explorer", "max_send_mb"): (1, 50),
     ("email", "smtp_port"): (1, 65535),
@@ -385,6 +392,7 @@ _LIST_SETTINGS: set[tuple[str, str]] = {
     ("transfers", "sensitive_folders"),
     ("delete_protect", "protected_folders"),
     ("explorer", "allowed_roots"),
+    ("alerts", "known_safe_apps"),
 }
 _LLM_PROVIDERS = ("gemini", "openai", "anthropic")
 
@@ -470,7 +478,7 @@ def get_settings(config_path: str | Path) -> dict:
         "secret_gate": {
             "enabled": bool(gate.get("enabled", True)),
             "clicks": int(gate.get("clicks", 4)),
-            "code": str(gate.get("code", "1122")),
+            "code_set": bool(gate.get("code")),
             "click_window_seconds": int(gate.get("click_window_seconds", 2)),
             "arm_seconds": int(gate.get("arm_seconds", 10)),
         },
@@ -483,6 +491,12 @@ def get_settings(config_path: str | Path) -> dict:
             "idle_minutes": int(alerts.get("idle_minutes", 120)),
             "large_download_mb": int(alerts.get("large_download_mb", 500)),
             "new_app_min_minutes": int(alerts.get("new_app_min_minutes", 5)),
+            "deletion_burst_count": int(alerts.get("deletion_burst_count", 5)),
+            "deletion_burst_minutes": int(alerts.get("deletion_burst_minutes", 10)),
+            "deletion_folder_count": int(alerts.get("deletion_folder_count", 3)),
+            "night_start_hour": int(alerts.get("night_start_hour", 0)),
+            "night_end_hour": int(alerts.get("night_end_hour", 5)),
+            "known_safe_apps": [str(a) for a in (alerts.get("known_safe_apps") or [])],
         },
         "backup": {
             "backup_keep_days": int(cfg.backup_keep_days),
@@ -524,7 +538,6 @@ def get_settings(config_path: str | Path) -> dict:
             "poll_seconds": int(delete_protect.get("poll_seconds", 30)),
             "mirror_max_mb": int(delete_protect.get("mirror_max_mb", 500)),
             "quarantine_max_gb": int(delete_protect.get("quarantine_max_gb", 10)),
-            "mirror_retention_days": int(delete_protect.get("mirror_retention_days", 30)),
             "protected_folders": [str(f) for f in (delete_protect.get("protected_folders") or [])],
         },
         "explorer": {
@@ -549,7 +562,8 @@ def get_settings(config_path: str | Path) -> dict:
         "local_path": _local_path(cfg_path).name,
         "local_exists": _local_path(cfg_path).exists(),
         "note": "Saved to config.local.yaml (config.yaml is never changed). "
-                "Restart the agent and the dashboard for changes to take effect.",
+                "Delete-protection settings apply within ~30 s; most other "
+                "settings need the agent and the dashboard restarted.",
     }
 
 
@@ -677,6 +691,30 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
         raise ValueError("; ".join(errors))
     if not new_local:
         return get_settings(cfg_path)
+    # Never overwrite a broken secrets file (v12.13 audit): the old
+    # code read config.local.yaml leniently ({} on any YAML error)
+    # and then wrote back only the new values — one routine Settings
+    # save permanently destroyed the Gemini key, bot token and SMTP
+    # password, while the UI reported "✅ Saved". Refuse instead, and
+    # keep a backup of the previous file before writing.
+    path = _local_path(cfg_path)
+    if path.exists():
+        try:
+            with path.open(encoding="utf-8") as f:
+                parsed = yaml.safe_load(f)
+            if parsed is not None and not isinstance(parsed, dict):
+                raise ValueError("config.local.yaml must contain a mapping")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                "config.local.yaml could not be parsed "
+                f"({exc}) — settings were NOT saved, so your saved "
+                "secrets are safe. Fix the file (or delete it) and try again.")
+        try:
+            shutil.copy2(path, path.with_suffix(".yaml.bak"))
+        except Exception:
+            pass
     # File layout differs from the API grouping: llm/alerts/secret_gate/
     # transfers/telegram/email/app_watch/delete_protect/explorer are nested
     # dicts in the yaml, but agent/backup keys live at the top level
@@ -860,7 +898,17 @@ def make_handler(db_path: Path, tagger, project_root: Path, alerts_settings: dic
                 return
 
             if parsed.path == "/api/summary":
-                day = _parse_date(get("date"))
+                # A bad ?date= answers 400, not today's data (v12.13,
+                # D6): the old fallback silently served the wrong day.
+                raw_date = get("date")
+                if raw_date:
+                    try:
+                        datetime.strptime(raw_date, "%Y-%m-%d")
+                    except ValueError:
+                        self._send_json({"ok": False,
+                                         "error": f"bad date: {raw_date} (use YYYY-MM-DD)"}, 400)
+                        return
+                day = _parse_date(raw_date)
                 db = self._open_db()
                 try:
                     self._send_json(dashboard_summary(db, day, tagger=tagger))

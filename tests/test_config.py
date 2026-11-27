@@ -45,5 +45,52 @@ def test_config_local_overlay():
     print("config local overlay tests passed")
 
 
+def test_effective_watch_folders_includes_protected():
+    # v12.13 (M10): delete_protect.protected_folders (set in Dashboard
+    # Settings) was never read anywhere — a Shift+Delete there was
+    # unrecoverable, with no warning.
+    tmp = Path(tempfile.mkdtemp())
+    accounts = tmp / "Accounts"
+    accounts.mkdir()
+    _write(tmp / "config.yaml", (
+        "watch_folders:\n"
+        f"  - {tmp / 'Desktop'}\n"
+        "transfers:\n"
+        "  sensitive_folders: []\n"
+        "delete_protect:\n"
+        "  protected_folders:\n"
+        f"  - {accounts}\n"
+    ))
+    cfg = Config.load(tmp / "config.yaml")
+    folders = [str(p) for p in cfg.effective_watch_folders()]
+    assert str(accounts) in folders, folders
+    print("effective watch folders include protected passed")
+
+
+def test_coerce_bool_and_min_int():
+    """v12.13 (C-m6/C-m7): quoted "false" in YAML must not become True,
+    and a 0 poll interval must not busy-loop."""
+    import tempfile
+    from pathlib import Path
+
+    from deskaudit.config import Config
+
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "config.yaml").write_text(
+        'browser_enabled: "false"\npoll_interval_seconds: 0\n'
+        'idle_threshold_seconds: 1\nbrowser_poll_seconds: 0\n',
+        encoding="utf-8")
+    cfg = Config.load(tmp / "config.yaml")
+    assert cfg.browser_enabled is False
+    assert cfg.poll_interval_seconds == 1
+    assert cfg.idle_threshold_seconds == 10
+    assert cfg.browser_poll_seconds == 5
+    print("coerce bool and min int tests passed")
+
+
+
 if __name__ == "__main__":
     test_config_local_overlay()
+    test_effective_watch_folders_includes_protected()
+    test_coerce_bool_and_min_int()
+

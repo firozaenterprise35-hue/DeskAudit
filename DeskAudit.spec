@@ -106,3 +106,15 @@ for _name in ("schedule_summary.bat", "unschedule_summary.bat",
     _src = _os.path.join(SPECPATH, _name)
     if _os.path.exists(_src):
         _shutil.copyfile(_src, _os.path.join(_exe_dir, _name))
+
+# Ship config.local.yaml (Gemini key + Telegram token) when the build
+# machine has it (v12.13, M17): the old flow copied it into dist/
+# by hand AFTER the build, so a clean rebuild silently shipped
+# without secrets and the bot + LLM fell back to unconfigured/local
+# behaviour. Recover it from the latest Drive zip to the REPO ROOT
+# before building; the spec copies it in when present. When absent,
+# the build still succeeds and the secrets are entered later in
+# Dashboard Settings (the Inno installer never deletes this file).
+_local_src = _os.path.join(SPECPATH, "config.local.yaml")
+if _os.path.exists(_local_src):
+    _shutil.copyfile(_local_src, _os.path.join(_exe_dir, "config.local.yaml"))

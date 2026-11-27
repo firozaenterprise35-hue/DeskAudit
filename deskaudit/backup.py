@@ -36,6 +36,79 @@ def backup_dir(project_root: str | Path) -> Path:
     return Path(project_root) / DEFAULT_BACKUP_DIR
 
 
+def agent_lock_path(project_root: str | Path) -> Path:
+    """The agent's lock file (data/agent.lock)."""
+    return Path(project_root) / "data" / "agent.lock"
+
+
+def acquire_agent_lock(project_root: str | Path):
+    """Take the agent's exclusive lock (held while the agent runs).
+    Returns an open file handle, or None when another DeskAudit
+    agent already holds it. v12.13 audit (M14): `--restore` used to
+    copy a backup over the LIVE database (WAL mode) with only a
+    printed warning — the safety copy could miss uncheckpointed WAL
+    data and the agent's next write landed in the restored file."""
+    import sys
+
+    path = agent_lock_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = path.open("a+b")
+    except OSError:
+        return None
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            fh.close()
+        except Exception:
+            pass
+        return None
+    return fh
+
+
+def agent_is_running(project_root: str | Path) -> bool:
+    """True when another DeskAudit agent currently holds the lock."""
+    fh = acquire_agent_lock(project_root)
+    if fh is None:
+        return True
+    try:
+        fh.close()
+    except Exception:
+        pass
+    return False
+
+
+def release_agent_lock(fh) -> None:
+    """Release a lock taken by `acquire_agent_lock`."""
+    if fh is None:
+        return
+    try:
+        import sys
+        if sys.platform == "win32":
+            import msvcrt
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+
 def _timestamp() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d-%H%M%S")
 
@@ -77,9 +150,31 @@ def make_backup(db_path: str | Path, project_root: str | Path,
     try:
         tables = {r[0] for r in check.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "app_sessions" not in tables:
+        # v12.13 (P7): used to check only app_sessions — a backup that
+        # lost every other table passed. Verify the core tables, and
+        # that each holds at least the rows the source holds (a partial
+        # copy must fail loudly, not silently).
+        expected = {"app_sessions", "file_events", "browser_sessions",
+                    "browser_visits", "transfers", "alerts", "quarantined_files"}
+        missing = expected - tables
+        if missing:
             dest.unlink(missing_ok=True)
-            raise ValueError(f"Backup verification failed: {dest}")
+            raise ValueError(
+                f"Backup verification failed: missing tables {sorted(missing)}")
+        src_check = sqlite3.connect(db_path)
+        try:
+            for table in sorted(expected):
+                src_n = src_check.execute(
+                    f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                dst_n = check.execute(
+                    f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                if dst_n < src_n:
+                    dest.unlink(missing_ok=True)
+                    raise ValueError(
+                        f"Backup verification failed: {table} has {dst_n} "
+                        f"rows, source has {src_n}")
+        finally:
+            src_check.close()
     finally:
         check.close()
     prune_backups(out_dir, keep_days=keep_days, keep_count=keep_count)
@@ -87,11 +182,40 @@ def make_backup(db_path: str | Path, project_root: str | Path,
 
 
 def list_backups(project_root: str | Path) -> list[dict]:
+    """Dated backups (deskaudit-YYYY-MM-DD-*.db), newest first.
+
+    Before-restore safety copies (deskaudit-before-restore-*.db)
+    are EXCLUDED (v12.13 audit): the old glob `deskaudit-*.db`
+    sorted by name put a safety copy first ('b' > '2'), so
+    `latest_backup()` — and `--restore --latest` — silently undid
+    the last restore, and `--backup-list` listed safety copies as
+    backups. See `list_safety_copies()` for the undo net."""
     out_dir = backup_dir(project_root)
     if not out_dir.exists():
         return []
     rows = []
-    for p in sorted(out_dir.glob("deskaudit-*.db"), reverse=True):
+    for p in sorted(out_dir.glob("deskaudit-2*.db"),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
+        stat = p.stat()
+        rows.append({
+            "path": p,
+            "name": p.name,
+            "size_bytes": stat.st_size,
+            "created": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
+        })
+    return rows
+
+
+def list_safety_copies(project_root: str | Path) -> list[dict]:
+    """Before-restore safety copies, newest first — the net for
+    undoing a restore. Kept apart from `list_backups()` so they can
+    never be picked as the 'latest backup'."""
+    out_dir = backup_dir(project_root)
+    if not out_dir.exists():
+        return []
+    rows = []
+    for p in sorted(out_dir.glob("deskaudit-before-restore-*.db"),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
         stat = p.stat()
         rows.append({
             "path": p,

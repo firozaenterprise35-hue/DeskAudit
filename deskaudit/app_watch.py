@@ -38,7 +38,7 @@ _SYSTEM_PROCS = {
     "textinputhost.exe", "applicationframehost.exe", "backgroundtaskhost.exe",
     "dllhost.exe", "conhost.exe", "spoolsv.exe", "searchhost.exe",
     "widgets.exe", "widgetservice.exe", "audiodg.exe", "wudfhost.exe",
-    "dasHost.exe", "lsalso.exe", "memory compression", "secure system",
+    "dashost.exe", "lsalso.exe", "memory compression", "secure system",
     "deskaudit.exe", "desk audit.exe",
 }
 

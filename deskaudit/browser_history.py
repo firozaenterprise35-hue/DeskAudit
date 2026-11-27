@@ -241,6 +241,18 @@ def read_chromium_downloads(history_path: Path, browser: str,
                 if started is not None and since is not None and started <= since:
                     continue
                 path = row["target"] or row["path"] or ""
+                if started is None and path:
+                    # v12.13 (C-m3): a download with no start_time was
+                    # re-imported on EVERY poll (the UNIQUE key treats
+                    # NULL started_at as distinct) and never appeared in
+                    # reports. Fall back to the file's mtime — it is
+                    # deterministic across polls, so the UNIQUE key dedups
+                    # it, and the report shows the right day.
+                    try:
+                        started = datetime.fromtimestamp(
+                            Path(path).stat().st_mtime).astimezone()
+                    except Exception:
+                        started = None
                 url = redact_url(row["url"] or "")
                 out.append(DownloadRecord(
                     browser=browser, url=url, domain=domain_of(url),

@@ -459,8 +459,16 @@ class FileExplorer:
             hid = self.db.log_hidden(
                 today_str(), src.name, str(src), str(dest), size)
         except Exception as exc:
+            # v12.13 (P7): the file is already moved but the DB row
+            # failed — the item would carry id 0 and its Telegram
+            # restore button could never work. Move the file BACK and
+            # report the failure instead of leaving an unfindable file.
             _log.warning("hide: DB log failed for %s: %s", src, exc)
-            hid = 0
+            try:
+                shutil.move(str(dest), str(src))
+            except Exception:
+                _log.warning("hide: could not move %s back to %s", dest, src)
+            return False, "হাইড করা যায়নি — রেকর্ড লেখা যায়নি, ফাইল আগের জায়গাতেই আছে।", None
         item = {"id": hid, "file_name": src.name,
                 "original_path": str(src), "hidden_path": str(dest),
                 "size_bytes": size}

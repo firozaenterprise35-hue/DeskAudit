@@ -136,6 +136,31 @@ def seed_browser_and_files(tmp: Path):
     return db, date, sensitive
 
 
+def test_sensitive_original_in_subfolder():
+    # v12.13 (M11): the old check only looked at the sensitive
+    # folder's TOP level, so an original in D:/Accounts/2026/ was
+    # missed and its copy out was never flagged.
+    tmp = Path(tempfile.mkdtemp())
+    db, date, sensitive = seed_browser_and_files(tmp)
+    sub = sensitive / "2026"
+    sub.mkdir()
+    original = sub / "invoice.xlsx"
+    original.write_bytes(b"x" * 100)
+    db.log_file_event("created", str(tmp / "Desktop" / "invoice.xlsx"),
+                      size_bytes=100,
+                      occurred_at=datetime.now().astimezone().replace(hour=11),
+                      project="Office")
+    monitor = TransferMonitor(db, {
+        **DEFAULT_TRANSFERS,
+        "sensitive_folders": [str(sensitive)],
+    })
+    found = monitor.scan_file_events(date)
+    kinds = [t.transfer_type for t in found if t.file_name == "invoice.xlsx"]
+    assert "sensitive_copy" in kinds, kinds
+    db.close()
+    print("sensitive original in subfolder passed")
+
+
 def test_monitor_scans():
     tmp = Path(tempfile.mkdtemp())
     db, date, sensitive = seed_browser_and_files(tmp)
@@ -287,13 +312,35 @@ def test_dashboard_transfers_settings():
     print("dashboard transfers settings tests passed")
 
 
+def test_seen_print_jobs_evicted():
+    """v12.13 (P3): _seen_print_jobs grew forever and a job ID reused
+    after a spooler restart was skipped silently. Entries older than
+    a day are now evicted each poll."""
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    monitor = TransferMonitor(db, {**DEFAULT_TRANSFERS})
+    now = datetime.now().astimezone()
+    old = now - timedelta(days=2)
+    monitor._seen_print_jobs = {
+        ("Printer A", 5, old), ("Printer B", 7, now),
+    }
+    monitor.poll_printers(now)  # no printers on Linux; only eviction runs
+    keys = {(p, j) for (p, j, _ts) in monitor._seen_print_jobs}
+    assert ("Printer A", 5) not in keys
+    assert ("Printer B", 7) in keys
+    db.close()
+    print("seen print jobs evicted passed")
+
+
 if __name__ == "__main__":
     test_classify_transfer_domain()
     test_is_sensitive_path()
     test_snapshot_diff()
     test_off_windows_noops()
     test_log_transfer_dedup()
+    test_sensitive_original_in_subfolder()
     test_monitor_scans()
+    test_seen_print_jobs_evicted()
     test_transfer_alerts()
     test_dashboard_transfers_api()
     test_dashboard_transfers_settings()

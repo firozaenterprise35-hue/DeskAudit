@@ -67,7 +67,7 @@ def test_lock_flow():
         assert "set_telegram_enabled" not in text  # no dashboard content
         assert "keydown" in text and "/api/unlock" in text  # key capture
         # Locked: data APIs refuse without a session.
-        code, body, _ = _req(url + "api/summary?date={day}")
+        code, body, _ = _req(url + f"api/summary?date={day}")
         assert code == 401
         assert json.loads(body)["error"] == "locked"
         code, body, _ = _req(url + "api/settings")
@@ -78,7 +78,7 @@ def test_lock_flow():
         # Wrong code: still locked.
         code, body, _ = _req(url + "api/unlock", method="POST", data={"code": "0000"})
         assert code == 401
-        code, body, _ = _req(url + "api/summary?date={day}")
+        code, body, _ = _req(url + f"api/summary?date={day}")
         assert code == 401
         # Right code: session cookie, then the dashboard + APIs open.
         code, body, set_cookie = _req(url + "api/unlock", method="POST", data={"code": "1122"})
@@ -89,7 +89,7 @@ def test_lock_flow():
         code, body, _ = _req(url, cookie=cookie)
         assert code == 200
         assert "set_telegram_enabled" in body.decode("utf-8")
-        code, body, _ = _req(url + "api/summary?date={day}", cookie=cookie)
+        code, body, _ = _req(url + f"api/summary?date={day}", cookie=cookie)
         assert code == 200
         assert json.loads(body)["kpis"]["active_seconds"] == 1500
         # Lock again: the session dies, the lock page returns.
@@ -97,7 +97,7 @@ def test_lock_flow():
         assert code == 200
         code, body, _ = _req(url, cookie=cookie)
         assert "set_telegram_enabled" not in body.decode("utf-8")
-        code, body, _ = _req(url + "api/summary?date={day}", cookie=cookie)
+        code, body, _ = _req(url + f"api/summary?date={day}", cookie=cookie)
         assert code == 401
     finally:
         server.stop()
@@ -129,7 +129,7 @@ def test_lock_disabled():
         code, body, _ = _req(url)
         assert code == 200
         assert "set_telegram_enabled" in body.decode("utf-8")
-        code, body, _ = _req(url + "api/summary?date={day}")
+        code, body, _ = _req(url + f"api/summary?date={day}")
         assert code == 200
     finally:
         server.stop()

@@ -147,9 +147,24 @@ def test_dashboard_no_duplicate_appbars():
     print("dashboard duplicate test passed")
 
 
+def test_night_window_crosses_midnight():
+    """v12.13 (C-m1): a 22:00-05:00 night window never fired — the old
+    check `start <= h < end` is never true when start > end."""
+    from deskaudit.alerts import _in_night_window
+
+    assert _in_night_window(23, 22, 5) is True
+    assert _in_night_window(2, 22, 5) is True
+    assert _in_night_window(5, 22, 5) is False
+    assert _in_night_window(12, 22, 5) is False
+    assert _in_night_window(3, 0, 5) is True
+    assert _in_night_window(6, 0, 5) is False
+    print("night window crosses midnight test passed")
+
+
 if __name__ == "__main__":
     test_alerts()
     test_goal_missed_only_past_days()
     test_night_false_positive_fixed()
     test_new_app_quiet()
     test_dashboard_no_duplicate_appbars()
+    test_night_window_crosses_midnight()

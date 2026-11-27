@@ -76,6 +76,31 @@ def test_weekly_summary():
     print("weekly summary tests passed")
 
 
+def test_untagged_total():
+    # v12.13 (M4): only the top 5 untagged apps were summed as the
+    # "total" — 6 untagged apps x 600 s reported 3000 s, not 3600 s.
+    from deskaudit.report import build_summary
+
+    tmp = Path(tempfile.mkdtemp())
+    db = Database(tmp / "test.db")
+    base = datetime.now().astimezone().replace(hour=10, minute=0, second=0, microsecond=0)
+    date = base.strftime("%Y-%m-%d")
+    for i in range(6):
+        sid = db.start_app_session(f"APP{i}.EXE", "", f"App {i}", base,
+                                   project="Untagged")
+        db.close_app_session(sid, base + timedelta(minutes=10), 600, 600, 0)
+    assert db.untagged_total(date) == 3600.0
+    summary = build_summary(db, date)
+    assert summary["untagged_seconds"] == 3600.0, summary["untagged_seconds"]
+    assert len(summary["untagged"]["apps"]) == 5  # top-5 still only for display
+    r = generate_daily_summary(db, date)
+    untagged = [s for s in r["sections"] if s["title"] == "আনট্যাগড"]
+    assert untagged and "1h 0m" in untagged[0]["text"], untagged
+    db.close()
+    print("untagged total passed")
+
+
 if __name__ == "__main__":
     test_daily_summary()
     test_weekly_summary()
+    test_untagged_total()

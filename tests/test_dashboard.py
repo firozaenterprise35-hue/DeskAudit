@@ -132,6 +132,40 @@ def test_dashboard_http():
     print("dashboard HTTP tests passed")
 
 
+def test_save_settings_refuses_broken_local():
+    # v12.13 (M1): one routine Settings save used to destroy
+    # config.local.yaml (all secrets) when it was unparseable — the
+    # lenient read returned {}, then only the new values were written
+    # back, while the UI reported "✅ Saved".
+    import os
+
+    from deskaudit.dashboard import get_settings, save_settings
+
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "config.yaml").write_text(
+        "poll_interval_seconds: 5\nllm:\n  provider: gemini\n"
+        "  model: gemini-3.5-flash-lite\n  api_key: ''\n",
+        encoding="utf-8")
+    broken = "llm: {api_key: 'secret-key-123', provider: gemini\n"
+    (tmp / "config.local.yaml").write_text(broken, encoding="utf-8")
+    try:
+        save_settings(tmp / "config.yaml", {"agent": {"poll_interval_seconds": 10}})
+    except ValueError as exc:
+        assert "config.local.yaml" in str(exc), exc
+    else:
+        raise AssertionError("saving over a broken local file must raise ValueError")
+    # The broken file is untouched — the secrets are still recoverable.
+    assert (tmp / "config.local.yaml").read_text(encoding="utf-8") == broken
+    # A valid save backs the old file up.
+    (tmp / "config.local.yaml").write_text(
+        "llm:\n  api_key: 'secret-key-123'\n", encoding="utf-8")
+    save_settings(tmp / "config.yaml", {"agent": {"poll_interval_seconds": 10}})
+    bak = tmp / "config.local.yaml.bak"
+    assert bak.exists() and "secret-key-123" in bak.read_text(encoding="utf-8")
+    assert "secret-key-123" in (tmp / "config.local.yaml").read_text(encoding="utf-8")
+    print("save settings refuses broken local passed")
+
+
 def test_dashboard_settings():
     import os
 
@@ -175,7 +209,8 @@ def test_dashboard_settings():
         })
         assert saved["agent"]["dashboard_on_start"] is False
         assert saved["secret_gate"]["clicks"] == 3
-        assert saved["secret_gate"]["code"] == "9999"
+        assert saved["secret_gate"]["code_set"] is True
+        assert "code" not in saved["secret_gate"]  # write-only (v12.13, D1)
         assert saved["secret_gate"]["enabled"] is True
         try:
             save_settings(tmp / "config.yaml", {"secret_gate": {"code": "ab12"}})
@@ -233,6 +268,33 @@ def test_dashboard_settings_http():
             assert data["saved"]["llm"]["api_key_set"] is True
             assert data["saved"]["agent"]["poll_interval_seconds"] == 7
         assert "http-key-1" in (tmp / "config.local.yaml").read_text(encoding="utf-8")
+        # New alert thresholds round-trip (v12.13, C-m5/D7) + the
+        # write-only gate code (D1) + a bad ?date= answers 400 (D6).
+        body = json.dumps({
+            "alerts": {"deletion_burst_count": 3, "night_start_hour": 22,
+                       "night_end_hour": 5, "known_safe_apps": "chrome.exe, code.exe"},
+            "secret_gate": {"code": "7777"},
+        }).encode("utf-8")
+        req = urllib.request.Request(url + "api/settings", data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+            assert data["saved"]["alerts"]["deletion_burst_count"] == 3
+            assert data["saved"]["alerts"]["night_start_hour"] == 22
+            assert data["saved"]["alerts"]["night_end_hour"] == 5
+            assert data["saved"]["alerts"]["known_safe_apps"] == ["chrome.exe", "code.exe"]
+            assert data["saved"]["secret_gate"]["code_set"] is True
+            assert "code" not in data["saved"]["secret_gate"]
+        assert "7777" in (tmp / "config.local.yaml").read_text(encoding="utf-8")
+        try:
+            urllib.request.urlopen(url + "api/summary?date=not-a-date", timeout=5)
+            raise AssertionError("expected HTTP 400 for a bad date")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            assert json.loads(e.read())["ok"] is False
+        with urllib.request.urlopen(url + "api/summary?date=" + date, timeout=5) as r:
+            assert json.loads(r.read())["date"] == date
         # Bad value -> 400, nothing saved.
         body = json.dumps({"agent": {"poll_interval_seconds": 9999}}).encode("utf-8")
         req = urllib.request.Request(url + "api/settings", data=body,
@@ -288,5 +350,6 @@ if __name__ == "__main__":
     test_dashboard_summary()
     test_dashboard_http()
     test_dashboard_settings()
+    test_save_settings_refuses_broken_local()
     test_dashboard_settings_http()
     test_dashboard_js_syntax()

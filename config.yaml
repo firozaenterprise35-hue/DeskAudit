@@ -210,7 +210,6 @@ delete_protect:
   poll_seconds: 30
   mirror_max_mb: 500
   quarantine_max_gb: 10
-  mirror_retention_days: 30
   protected_folders: []
 
 # --- Telegram file explorer -------------------------------------------

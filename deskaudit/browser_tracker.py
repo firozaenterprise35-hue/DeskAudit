@@ -34,6 +34,7 @@ from .browser_history import (
     read_profile_history,
 )
 from .browser_utils import (
+    _domain_matches,
     browser_for_exe,
     classify_domain,
     clean_window_title,
@@ -42,6 +43,10 @@ from .browser_utils import (
     is_browser_exe,
 )
 from .database import Database
+
+# Same tab re-posted by the extension within this window counts as
+# one visit (v12.13 audit, M3). The extension posts every 60 s.
+_EXT_VISIT_DEDUP_SECONDS = 300
 
 
 class BrowserTracker:
@@ -65,6 +70,15 @@ class BrowserTracker:
         # open a session, or every extension report creates a spurious
         # ~0 s session row even when Chrome is not the foreground app.
         self._extension_tab: dict | None = None
+        # (browser, url) -> last time the extension re-post was logged
+        # as a visit, so the 60 s re-posts do not flood browser_visits
+        # (v12.13 audit, M3).
+        self._last_ext_visit: dict[tuple, datetime] = {}
+
+    def _track_searches(self) -> bool:
+        """Whether search queries are recorded (config flag, v12.13
+        audit M2: the Dashboard toggle did nothing)."""
+        return bool(getattr(self.config, "track_searches", True))
 
     # -- history ------------------------------------------------------
     @property
@@ -108,7 +122,7 @@ class BrowserTracker:
                 )
                 if added:
                     counts["visits"] += 1
-                    if visit.search_query:
+                    if visit.search_query and self._track_searches():
                         counts["searches"] += 1
                         self.db.log_browser_search(
                             visit.browser, visit.search_query, visit.url,
@@ -139,8 +153,10 @@ class BrowserTracker:
         return counts
 
     def _is_excluded_domain(self, domain: str) -> bool:
+        # v12.13 (C-m11): was a raw substring check — "mail" excluded
+        # gmail.com. Use label-boundary matching instead.
         excluded = getattr(self.config, "exclude_domains", set()) or set()
-        return any(item.lower() in (domain or "").lower() for item in excluded)
+        return any(_domain_matches(item, domain) for item in excluded)
 
     def _tag(self, url: str = "", domain: str = "", title: str = "",
              search_query: str = "") -> tuple[str, list[str]]:
@@ -152,7 +168,14 @@ class BrowserTracker:
     # -- exact URL, when available -------------------------------------
     def cdp_active_tab(self) -> dict | None:
         """Ask CDP (port from config) for the active tab. Returns None if
-        the browser was not started with --remote-debugging-port."""
+        the browser was not started with --remote-debugging-port.
+
+        Known limit (v12.13 audit): /json/list does not say which tab is
+        the active one, so the FIRST http(s) page tab is returned — the
+        caller cross-checks it against the foreground window title,
+        which is right except when the window title is empty. The
+        extension (exact active tab) and history polling stay the
+        accurate paths."""
         port = getattr(self.config, "browser_cdp_port", 0) or 0
         if not port:
             return None
@@ -175,7 +198,13 @@ class BrowserTracker:
                              at: datetime | None = None) -> None:
         """Called by browser_receiver.py when the extension reports a tab.
         Treated as a visit (deduped); the exact URL is kept for tick()
-        to use when this browser IS the foreground app."""
+        to use when this browser IS the foreground app.
+
+        The extension re-posts the active tab every 60 s, so the same
+        (browser, url) re-posted within 5 minutes is the SAME visit
+        (v12.13 audit, M3): the old code logged a new visit row per
+        post, so an 8-hour open Google tab made ~480 duplicate visit
+        + search rows."""
         at = at or datetime.now().astimezone()
         from .browser_utils import redact_url
 
@@ -185,11 +214,21 @@ class BrowserTracker:
             return
         query = extract_search_query(url)
         project, tags = self._tag(url, domain, title, query or "")
-        if self.db.log_browser_visit(browser, url, domain, title[:200], at, query,
-                                     project=project, tags=tags):
-            if query:
-                self.db.log_browser_search(browser, query, url, domain, at,
-                                           project=project, tags=tags)
+        key = (browser, url)
+        last = self._last_ext_visit.get(key)
+        # Prune stale entries so the cache stays small.
+        if self._last_ext_visit:
+            self._last_ext_visit = {
+                k: v for k, v in self._last_ext_visit.items()
+                if (at - v).total_seconds() < _EXT_VISIT_DEDUP_SECONDS}
+            last = self._last_ext_visit.get(key)
+        if last is None or (at - last).total_seconds() >= _EXT_VISIT_DEDUP_SECONDS:
+            self._last_ext_visit[key] = at
+            if self.db.log_browser_visit(browser, url, domain, title[:200], at, query,
+                                         project=project, tags=tags):
+                if query and self._track_searches():
+                    self.db.log_browser_search(browser, query, url, domain, at,
+                                               project=project, tags=tags)
         self._extension_tab = {"browser": browser, "url": url,
                                "title": title, "at": at}
 
@@ -286,9 +325,6 @@ class BrowserTracker:
         except Exception:
             pass
 
-    def note_tab_switch(self) -> None:
-        self._tab_switches += 1
-
     def _close_session(self, now: datetime) -> None:
         if self._session_id is None or self._started_at is None:
             return
@@ -329,7 +365,7 @@ class BrowserTracker:
                     project=project, tags=tags,
                 ):
                     counts["visits"] += 1
-                    if visit.search_query:
+                    if visit.search_query and self._track_searches():
                         counts["searches"] += 1
                         self.db.log_browser_search(
                             visit.browser, visit.search_query, visit.url,

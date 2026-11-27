@@ -1,12 +1,12 @@
 ; DeskAudit installer — Inno Setup 6 script.
 ; Build the exe first (build_exe.bat), then compile this with:
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\DeskAudit.iss
-; Output: installer\Output\DeskAudit-Setup-12.7.exe
+; Output: installer\Output\DeskAudit-Setup-12.13.exe
 ; Installs per-user to %LOCALAPPDATA%\DeskAudit (no admin needed) so the
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 
 #define MyAppName "DeskAudit"
-#define MyAppVersion "12.12"
+#define MyAppVersion "12.13"
 #define MyAppPublisher "Firoza"
 #define MyAppExeName "DeskAudit.exe"
 
@@ -35,7 +35,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start DeskAudit when Windows starts"; GroupDescription: "Startup:"; Flags: checked
 
 [Files]
-Source: "..\dist\DeskAudit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; config.local.yaml (Gemini key + Telegram token) is installed with
+; uninsneveruninstall (v12.13, M16): the old wildcard installed it as
+; an ordinary file, so Inno deleted it on uninstall — wiping the key
+; and token. It is excluded from the wildcard below so the two entries
+; do not fight. skipifsourcedoesntexist: a clean build without secrets
+; still compiles; the key/token are then entered in Dashboard Settings.
+Source: "..\dist\DeskAudit\config.local.yaml"; DestDir: "{app}"; Flags: uninsneveruninstall skipifsourcedoesntexist
+Source: "..\dist\DeskAudit\*"; Excludes: "config.local.yaml"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\DeskAudit"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--hidden"; WorkingDir: "{app}"
@@ -62,5 +69,18 @@ begin
       stop it first (harmless when it is not running). }
     Exec('taskkill.exe', '/F /IM DeskAudit.exe', '', SW_HIDE,
       ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    { Remove the 9pm scheduled task (v12.13, M15): it pointed at the
+      deleted exe and fired daily, failing silently after uninstall. }
+    Exec('schtasks.exe', '/delete /tn "DeskAudit Daily Summary" /f', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

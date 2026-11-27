@@ -67,6 +67,30 @@ def _coerce_int(value, default: int) -> int:
         return default
 
 
+def _coerce_bool(value, default: bool) -> bool:
+    """bool() that understands the strings YAML can produce. The old
+    `bool(merged.get(...))` treated a quoted "false" as True (v12.13
+    audit, C-m6): a non-empty string is truthy in Python."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("true", "yes", "on", "1"):
+            return True
+        if low in ("false", "no", "off", "0", ""):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _coerce_min_int(value, default: int, minimum: int) -> int:
+    """_coerce_int with a floor (v12.13 audit, C-m7): a 0 poll
+    interval used to busy-loop (time.sleep(0)) or re-poll the whole
+    history every tick."""
+    return max(minimum, _coerce_int(value, default))
+
+
 @dataclass
 class Config:
     poll_interval_seconds: int = 5
@@ -167,9 +191,17 @@ class Config:
 
         explorer = {**DEFAULT_EXPLORER,
                     **(merged.get("explorer", {}) or {})}
+        # Quoted "false" strings in nested sections must not become
+        # True either (v12.13 audit, C-m6): normalise every `enabled`
+        # / `notify_*` flag through the same coercion.
+        for section in (transfers, telegram, email, app_watch, delete_protect, explorer):
+            for key, value in list(section.items()):
+                if key in ("enabled", "notify_new_app", "notify_critical",
+                           "usb_alert", "print_alert", "sensitive_copy_alert"):
+                    section[key] = _coerce_bool(value, bool(value))
         return cls(
-            poll_interval_seconds=_coerce_int(merged.get("poll_interval_seconds", 5), 5),
-            idle_threshold_seconds=_coerce_int(merged.get("idle_threshold_seconds", 300), 300),
+            poll_interval_seconds=_coerce_min_int(merged.get("poll_interval_seconds", 5), 5, 1),
+            idle_threshold_seconds=_coerce_min_int(merged.get("idle_threshold_seconds", 300), 300, 10),
             db_path=(root / expand_path(str(merged.get("db_path", "data/deskaudit.db"))))
             if not expand_path(str(merged.get("db_path", "data/deskaudit.db"))).is_absolute()
             else expand_path(str(merged.get("db_path", "data/deskaudit.db"))),
@@ -185,23 +217,23 @@ class Config:
             exclude_folders={
                 str(e).lower() for e in merged.get("exclude_folders", [])
             },
-            browser_enabled=bool(merged.get("browser_enabled", True)),
-            browser_poll_seconds=_coerce_int(merged.get("browser_poll_seconds", 60), 60),
+            browser_enabled=_coerce_bool(merged.get("browser_enabled", True), True),
+            browser_poll_seconds=_coerce_min_int(merged.get("browser_poll_seconds", 60), 60, 5),
             browser_cdp_port=_coerce_int(merged.get("browser_cdp_port", 0) or 0, 0),
-            browser_receiver_enabled=bool(merged.get("browser_receiver_enabled", False)),
+            browser_receiver_enabled=_coerce_bool(merged.get("browser_receiver_enabled", False), False),
             browser_receiver_port=_coerce_int(merged.get("browser_receiver_port", 8765), 8765),
-            track_downloads=bool(merged.get("track_downloads", True)),
-            track_searches=bool(merged.get("track_searches", True)),
+            track_downloads=_coerce_bool(merged.get("track_downloads", True), True),
+            track_searches=_coerce_bool(merged.get("track_searches", True), True),
             productive_domains={str(e).lower() for e in merged.get("productive_domains", [])},
             distracting_domains={str(e).lower() for e in merged.get("distracting_domains", [])},
             exclude_domains={str(e).lower() for e in merged.get("exclude_domains", [])},
             alerts=dict(merged.get("alerts", {}) or {}),
             backup_keep_days=_coerce_int(merged.get("backup_keep_days", 30), 30),
             backup_keep_count=_coerce_int(merged.get("backup_keep_count", 30), 30),
-            backup_on_start=bool(merged.get("backup_on_start", True)),
+            backup_on_start=_coerce_bool(merged.get("backup_on_start", True), True),
             llm=dict(merged.get("llm", {}) or {}),
-            dashboard_on_start=bool(merged.get("dashboard_on_start", True)),
-            dashboard_lock=bool(merged.get("dashboard_lock", True)),
+            dashboard_on_start=_coerce_bool(merged.get("dashboard_on_start", True), True),
+            dashboard_lock=_coerce_bool(merged.get("dashboard_lock", True), True),
             secret_gate={**DEFAULT_SECRET_GATE, **(merged.get("secret_gate", {}) or {})},
             transfers=transfers,
             telegram=telegram,
@@ -233,12 +265,27 @@ class Config:
         return False
 
     def effective_watch_folders(self) -> list[Path]:
-        """Watch folders + sensitive folders (for the Data Transfer
-        Monitor). A sensitive folder outside Desktop/Documents still
-        needs watching, or no file events exist to scan for it."""
+        """Watch folders + sensitive folders + extra protected folders
+        (for the Data Transfer Monitor and delete protection). A
+        sensitive folder outside Desktop/Documents still needs
+        watching, or no file events exist to scan for it.
+
+        v12.13 audit: `delete_protect.protected_folders` (set in
+        Dashboard Settings -> ডিলিট সুরক্ষা) was never read anywhere
+        — a user adding D:/Accounts there got a Shift+Delete that was
+        unrecoverable, with no warning. It is part of this list now,
+        so the mirror covers it."""
         folders: list[Path] = list(self.watch_folders)
         seen = {str(p).lower().replace("\\", "/") for p in folders}
         for raw in (self.transfers or {}).get("sensitive_folders") or []:
+            try:
+                p = expand_path(str(raw))
+            except Exception:
+                continue
+            if str(p).lower().replace("\\", "/") not in seen:
+                seen.add(str(p).lower().replace("\\", "/"))
+                folders.append(p)
+        for raw in (self.delete_protect or {}).get("protected_folders") or []:
             try:
                 p = expand_path(str(raw))
             except Exception:

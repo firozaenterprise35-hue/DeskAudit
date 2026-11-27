@@ -13,8 +13,69 @@ group by calendar date without timezone maths.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
+
+
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards so a user search is literal (v12.13, C-m11):
+    '%' or '_' in a search term must not match any character."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+class _LockedConnection:
+    """One SQLite connection shared by several threads (watchdog
+    observer, main loop, Telegram poller), with every call serialized
+    through an RLock.
+
+    v12.13 audit: the raw connection (`check_same_thread=False`,
+    no lock) lost data silently under concurrent writes — a stress
+    test with 4 writers x 200 writes kept only 204 of 800 rows,
+    with InterfaceError / 'cannot start a transaction within a
+    transaction', and every writer swallowed the error with only a
+    log line. Serializing each call keeps interleaved transactions
+    from ever starting. Reads go through the same lock (they are
+    fast; correctness beats throughput here). Attribute access is
+    forwarded to the real connection (e.g. `row_factory`)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_lock", threading.RLock())
+
+    def execute(self, *args, **kwargs):
+        with self._lock:
+            return self._conn.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        with self._lock:
+            return self._conn.executemany(*args, **kwargs)
+
+    def executescript(self, *args, **kwargs):
+        with self._lock:
+            return self._conn.executescript(*args, **kwargs)
+
+    def commit(self):
+        with self._lock:
+            return self._conn.commit()
+
+    def rollback(self):
+        with self._lock:
+            return self._conn.rollback()
+
+    def close(self):
+        with self._lock:
+            return self._conn.close()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_conn", "_lock"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._conn, name, value)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_sessions (
@@ -194,7 +255,8 @@ class Database:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
+        self.conn = _LockedConnection(
+            sqlite3.connect(self.db_path, check_same_thread=False, timeout=30))
         self.conn.row_factory = sqlite3.Row
         try:
             # WAL lets dashboard reads proceed while the agent writes
@@ -412,6 +474,18 @@ class Database:
                              total_bytes: int | None, received_bytes: int | None,
                              state: str, started_at: datetime | None,
                              project: str = "Untagged", tags=None) -> bool:
+        # v12.13 (C-m3): when started_at is still unknown (file gone, so
+        # no mtime fallback), the UNIQUE key cannot dedup NULLs — guard
+        # explicitly so one unknown-start download is logged once.
+        if started_at is None:
+            dup = self.conn.execute(
+                """SELECT 1 FROM browser_downloads
+                   WHERE browser=? AND file_path=? AND started_at IS NULL
+                   LIMIT 1""",
+                (browser, file_path),
+            ).fetchone()
+            if dup:
+                return False
         try:
             self.conn.execute(
                 """INSERT OR IGNORE INTO browser_downloads
@@ -467,8 +541,9 @@ class Database:
             return ""
         row = self.conn.execute(
             """SELECT url FROM browser_visits
-               WHERE browser=? AND title LIKE ? ORDER BY visited_at DESC LIMIT 1""",
-            (browser, f"%{title[:60]}%"),
+               WHERE browser=? AND title LIKE ? ESCAPE '\\'
+               ORDER BY visited_at DESC LIMIT 1""",
+            (browser, f"%{_like_escape(title[:60])}%"),
         ).fetchone()
         return row["url"] if row else ""
 
@@ -498,12 +573,19 @@ class Database:
         ).fetchall()
 
     def browser_totals(self, date: str) -> sqlite3.Row:
+        # Three buckets (v12.13 audit): only KNOWN-distracting
+        # categories count as distracting. An unlisted domain
+        # (category 'other'/'unknown' — an intranet site, a shop's
+        # own portal, a news site not in the map) is neutral "other":
+        # the old query counted every NOT-productive second as
+        # distracting, inflating the KPI and tripping the alert.
         return self.conn.execute(
             """SELECT COALESCE(SUM(active_seconds), 0) AS active,
                       COALESCE(SUM(duration_seconds), 0) AS total,
                       COUNT(DISTINCT domain) AS domains,
                       COALESCE(SUM(CASE WHEN is_productive THEN active_seconds ELSE 0 END), 0) AS productive,
-                      COALESCE(SUM(CASE WHEN NOT is_productive THEN active_seconds ELSE 0 END), 0) AS distracting
+                      COALESCE(SUM(CASE WHEN NOT is_productive AND category NOT IN ('other', 'unknown') THEN active_seconds ELSE 0 END), 0) AS distracting,
+                      COALESCE(SUM(CASE WHEN NOT is_productive AND category IN ('other', 'unknown') THEN active_seconds ELSE 0 END), 0) AS other_seconds
                FROM browser_sessions WHERE substr(started_at, 1, 10) = ?""",
             (date,),
         ).fetchone()
@@ -524,11 +606,16 @@ class Database:
         ).fetchall()
 
     def downloads_for_date(self, date: str) -> list[sqlite3.Row]:
+        # v12.13 (C-m3): downloads whose start time is still unknown show
+        # on today's report (they were discovered recently); otherwise
+        # they were invisible in every report.
         return self.conn.execute(
             """SELECT browser, file_name, total_bytes, state, started_at
                FROM browser_downloads
-               WHERE substr(started_at, 1, 10) = ? ORDER BY started_at DESC""",
-            (date,),
+               WHERE substr(started_at, 1, 10) = ?
+                  OR (started_at IS NULL AND date('now', 'localtime') = ?)
+               ORDER BY started_at DESC""",
+            (date, date),
         ).fetchall()
 
     # -- projects -------------------------------------------------------
@@ -686,6 +773,17 @@ class Database:
             out.sort(key=lambda x: -x["active"])
         return out
 
+    def untagged_total(self, date: str) -> float:
+        """Total active seconds across ALL untagged apps (no top-N
+        limit) — v12.13 audit: the top-5 sum was used as the total,
+        undercounting untagged time whenever more than 5 apps were
+        untagged."""
+        row = self.conn.execute(
+            """SELECT COALESCE(SUM(active_seconds), 0) FROM app_sessions
+               WHERE substr(started_at, 1, 10) = ? AND project = 'Untagged'""",
+            (date,)).fetchone()
+        return float(row[0] or 0)
+
     def untagged_top(self, date: str, limit: int = 10) -> dict:
         """Top untagged items, for --suggest-projects."""
         def rows(sql, params):
@@ -738,8 +836,8 @@ class Database:
         for r in rows:
             project, tags = tagger.tag_app(r["app_name"], r["exe_path"] or "", r["window_title"] or "")
             cur = self.conn.execute(
-                "UPDATE app_sessions SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE app_sessions SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["app_sessions"] += cur.rowcount
         # file_events
         date_filter_f = " AND substr(occurred_at, 1, 10) = ?" if date else ""
@@ -749,8 +847,8 @@ class Database:
         for r in rows:
             project, tags = tagger.tag_file(r["path"], r["dest_path"] or "")
             cur = self.conn.execute(
-                "UPDATE file_events SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE file_events SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["file_events"] += cur.rowcount
         # browser_visits
         date_filter_v = " AND substr(visited_at, 1, 10) = ?" if date else ""
@@ -761,8 +859,8 @@ class Database:
             project, tags = tagger.tag_browser(r["url"] or "", r["domain"] or "",
                                                r["title"] or "", r["search_query"] or "")
             cur = self.conn.execute(
-                "UPDATE browser_visits SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE browser_visits SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["browser_visits"] += cur.rowcount
         # browser_sessions
         rows = self.conn.execute(
@@ -771,8 +869,8 @@ class Database:
         for r in rows:
             project, tags = tagger.tag_browser(r["url"] or "", r["domain"] or "", r["title"] or "")
             cur = self.conn.execute(
-                "UPDATE browser_sessions SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE browser_sessions SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["browser_sessions"] += cur.rowcount
         # browser_downloads
         date_filter_d = " AND substr(started_at, 1, 10) = ?" if date else ""
@@ -782,8 +880,8 @@ class Database:
         for r in rows:
             project, tags = tagger.tag_download(r["url"] or "", r["domain"] or "", r["file_path"] or "")
             cur = self.conn.execute(
-                "UPDATE browser_downloads SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE browser_downloads SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["browser_downloads"] += cur.rowcount
         # browser_searches
         date_filter_s = " AND substr(searched_at, 1, 10) = ?" if date else ""
@@ -793,8 +891,8 @@ class Database:
         for r in rows:
             project, tags = tagger.tag_search(r["query"] or "", r["url"] or "", r["domain"] or "")
             cur = self.conn.execute(
-                "UPDATE browser_searches SET project=?, tags=? WHERE id=?",
-                (project, self._tags_str(tags), r["id"]))
+                "UPDATE browser_searches SET project=?, tags=? WHERE id=? AND (project IS NOT ? OR tags IS NOT ?)",
+                (project, self._tags_str(tags), r["id"], project, self._tags_str(tags)))
             counts["browser_searches"] += cur.rowcount
         self.conn.commit()
         return counts
@@ -1056,11 +1154,11 @@ class Database:
     def search_today(self, date: str, query: str, limit: int = 10) -> dict:
         """Case-insensitive search of one day: file names, window titles
         and browser search queries containing `query`."""
-        like = f"%{query}%"
+        like = f"%{_like_escape(query)}%"
         try:
             files = self.conn.execute(
                 """SELECT event_type, path, occurred_at FROM file_events
-                   WHERE substr(occurred_at, 1, 10) = ? AND path LIKE ?
+                   WHERE substr(occurred_at, 1, 10) = ? AND path LIKE ? ESCAPE '\\'
                    ORDER BY occurred_at DESC LIMIT ?""",
                 (date, like, limit),
             ).fetchall()
@@ -1069,7 +1167,7 @@ class Database:
         try:
             titles = self.conn.execute(
                 """SELECT app_name, window_title, started_at FROM app_sessions
-                   WHERE substr(started_at, 1, 10) = ? AND window_title LIKE ?
+                   WHERE substr(started_at, 1, 10) = ? AND window_title LIKE ? ESCAPE '\\'
                    ORDER BY started_at DESC LIMIT ?""",
                 (date, like, limit),
             ).fetchall()
@@ -1078,7 +1176,7 @@ class Database:
         try:
             searches = self.conn.execute(
                 """SELECT query, searched_at FROM browser_searches
-                   WHERE substr(searched_at, 1, 10) = ? AND query LIKE ?
+                   WHERE substr(searched_at, 1, 10) = ? AND query LIKE ? ESCAPE '\\'
                    ORDER BY searched_at DESC LIMIT ?""",
                 (date, like, limit),
             ).fetchall()

@@ -98,6 +98,15 @@ def _hour(ts: str) -> int:
         return -1
 
 
+def _in_night_window(h: int, start: int, end: int) -> bool:
+    """True when hour `h` is inside the night window. A window that
+    crosses midnight (22–05) never matched the old
+    `start <= h < end` test (v12.13 audit, C-m1)."""
+    if start <= end:
+        return start <= h < end
+    return h >= start or h < end
+
+
 def check_alerts(db: Database, date: str | None = None,
                  settings: dict | None = None, tagger=None,
                  transfer_settings: dict | None = None) -> list[Alert]:
@@ -179,7 +188,7 @@ def check_alerts(db: Database, date: str | None = None,
         # session (first_seen >= this session's start). Same-day daytime
         # use makes it known, so it does not fire.
         first = first_seen.get(app)
-        if (int(cfg["night_start_hour"]) <= h < int(cfg["night_end_hour"])
+        if (_in_night_window(h, int(cfg["night_start_hour"]), int(cfg["night_end_hour"]))
                 and app not in night_unknown
                 and (first is None or str(first) >= str(r["started_at"]))):
             night_unknown.append(app)
@@ -227,7 +236,9 @@ def check_alerts(db: Database, date: str | None = None,
                 {"project": p["project"], "percent": p.get("goal_percent", 0)}, date))
 
     # -- Untagged spike --------------------------------------------------
-    untagged_seconds = sum(float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", []))
+    # Full total, not the top-5 sum (v12.13).
+    untagged_seconds = float(summary.get("untagged_seconds") or 0) or sum(
+        float(a.get("seconds", 0)) for a in summary["untagged"].get("apps", []))
     active = summary["active_seconds"]
     if (untagged_seconds >= int(cfg["untagged_minutes"]) * 60
             and active and 100 * untagged_seconds / active >= int(cfg["untagged_percent"])):
@@ -278,12 +289,23 @@ def check_alerts(db: Database, date: str | None = None,
             return f"{round(n / 1024 / 1024, 1)} MB" if n >= 1024 * 1024 else f"{round(n / 1024, 1)} KB"
 
         def _seconds_of(kind: str) -> int:
+            # A history-only row (browser closed all day) carries no
+            # seconds — credit it the minimum session length instead
+            # (v12.13 audit, P4): otherwise a day of cloud/email use
+            # with no live session could never reach the thresholds.
+            min_seconds = int(tcfg.get(
+                "cloud_min_seconds" if kind == "cloud"
+                else "communication_min_seconds", 60))
             total = 0
             for r in trows:
                 if r["transfer_type"] != kind:
                     continue
                 try:
-                    total += int(json.loads(r["details"] or "{}").get("seconds", 0) or 0)
+                    details = json.loads(r["details"] or "{}")
+                    seconds = int(details.get("seconds", 0) or 0)
+                    if not seconds and details.get("source") == "history":
+                        seconds = min_seconds
+                    total += seconds
                 except (ValueError, TypeError):
                     continue
             return total
@@ -392,8 +414,16 @@ def notify_windows(alerts: list[Alert]) -> bool:
     """
     if not alerts or sys.platform != "win32":
         return False
-    title = f"DeskAudit: {len(alerts)}টি অ্যালার্ট"
-    body = "\n".join(a.title for a in alerts[:3])
+    # v12.13 (C-m10): alert titles come from window/file names, so they
+    # can contain &, <, >, $() or quotes — escape them for BOTH the
+    # PowerShell double-quoted string and the toast XML, or the toast
+    # breaks (and $() in a file name would be expanded by PowerShell).
+    def _esc(text: str) -> str:
+        text = text.replace("`", "``").replace("$", "`$").replace('"', '`"')
+        return (text.replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+    title = _esc(f"DeskAudit: {len(alerts)}টি অ্যালার্ট")
+    body = _esc("\n".join(a.title for a in alerts[:3]))
     ps = (
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
         "ContentType = WindowsRuntime] | Out-Null; "
