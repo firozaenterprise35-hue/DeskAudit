@@ -220,7 +220,7 @@ def test_full_menu():
                          "m:projects", "m:transfers", "m:files", "m:alerts",
                          "m:search", "m:report", "m:browser", "m:shot",
                          "m:explore", "m:hidden", "m:deleted", "m:help",
-                         "m:screen", "m:lock", "m:close", "m:freeze",
+                         "m:screen", "m:record", "m:lock", "m:close", "m:freeze",
                          "m:pause", "m:resume", "m:mute", "m:unmute",
                          "m:digest", "m:goal", "m:backup", "m:clear",
                          "m:shutdown", "m:restart", "m:abort", "m:reset"):
@@ -250,6 +250,23 @@ def test_full_menu():
             assert "শুধু Windows PC-তে চলে" in net.last_text()
             bot.handle_callback("m:lock", "cb-l")
             assert "শুধু Windows PC-তে চলে" in net.last_text()
+            # Record sub-menu, then a duration tap (Linux: windows-only).
+            bot.handle_callback("m:record", "cb-rec")
+            assert any(b["callback_data"] == "m:record_30"
+                       for row in net.posts[-1][1]["reply_markup"]["inline_keyboard"]
+                       for b in row)
+            bot.handle_callback("m:record_5", "cb-rec5")
+            assert "শুধু Windows PC-তে চলে" in net.last_text()
+            bot.handle_callback("m:record_status", "cb-recst")
+            assert "কোনো রেকর্ড চলছে না" in net.last_text()
+            bot.handle_text("/record")
+            assert any(b["callback_data"] == "m:record_1"
+                       for row in net.posts[-1][1]["reply_markup"]["inline_keyboard"]
+                       for b in row)
+            bot.handle_text("/record 99")
+            assert "১ থেকে ৬০ মিনিট" in net.last_text()
+            bot.handle_text("/record stop")
+            assert "কোনো রেকর্ড চলছে না" in net.last_text()
             # Mute / unmute through the menu.
             bot.handle_callback("m:mute", "cb-m")
             assert bot.muted() is True
@@ -580,6 +597,29 @@ def test_poll_callbacks_and_wrong_chat():
             net.uninstall()
             db.close()
     print("poll callbacks and wrong chat passed")
+
+
+def test_poll_skips_redelivered_update():
+    """v12.14: the same update delivered twice (offset save failed, or
+    a double delivery) must be answered only once."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db, day = _seed_db(os.path.join(tmp, "t.db"))
+        bot, _ = _make_bot(tmp, db)
+        net = _Net().install()
+        old_updates = tg.get_updates
+        update = {"update_id": 30,
+                  "message": {"text": "/status", "chat": {"id": 999}}}
+        tg.get_updates = lambda token, offset: [update]
+        try:
+            assert bot.poll_commands() == 1
+            assert bot.poll_commands() == 0  # same update_id: skipped
+            status = [t for _, t in net.sent if "বর্তমান অবস্থা" in t]
+            assert len(status) == 1
+        finally:
+            tg.get_updates = old_updates
+            net.uninstall()
+            db.close()
+    print("poll skips re-delivered update passed")
 
 
 def test_confirm_token_binding():

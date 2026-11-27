@@ -259,7 +259,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -331,6 +331,17 @@ so these run from your Telegram chat only.
   cover, not a lock — the keyboard and mouse still work, so Alt+Tab
   or Task Manager can still reach the PC. If the agent stops, the
   overlay dies with it.
+- **/record** (v12.14): records the screen silently for 1 / 3 / 5 /
+  10 / 15 / 20 / 30 minutes (buttons) or any 1–60 minutes typed
+  (`/record 7`); the finished video is sent to the owner's Telegram
+  chat by itself. `/record stop` stops early (the video so far is
+  still sent), `/record status` shows what is left. No window,
+  sound or indicator appears on the PC while it records. Frames are
+  JPEGs (max 960 px wide, max 700 frames, so the file stays under
+  Telegram's 50 MB limit); with ffmpeg on the PC the video is a
+  small H.264 MP4, otherwise an MJPEG AVI. Like /screenshot, it
+  shows screen content — only on the owner's command, only to her
+  chat, and staff must be told the PCs are monitored.
 - **/shutdown** / **/restart**: the PC powers off / restarts 60
   seconds after you confirm (so work can be saved); **/abort**
   cancels it while the countdown runs. All three need confirmation
@@ -624,6 +635,41 @@ all fixed.**
   seen; the screen overlay does not block input; `/api/health`
   stays unauthenticated on purpose (it only answers "ok").
 
+**Duplicate messages + screen recording (v12.14)** — the owner
+reported two things: the "new program opened" message arrived twice
+at the same time, and one Telegram command made the same feature
+come twice. The cause was two DeskAudit.exe processes running side
+by side (Windows startup + a Start Menu click, or an installed copy
++ a portable copy): both polled Telegram with the same stored
+offset, so both answered the same command, and both sent every
+new-program alert. There was no single-instance guard — the agent
+only warned in the log and kept running. Now a second agent stops
+itself at once (exit code 2) and shows a toast saying DeskAudit is
+already running; the lock is an OS file lock, released when the
+holding process dies, so a crashed agent can never block a restart.
+As a safety net, the bot also remembers the update_ids it already
+answered in this process, so a re-delivered update (offset save
+failed, or a double delivery) is never answered twice, and a failed
+offset save is logged instead of silent. The agent's PID is in the
+startup log line, so Task Manager can be checked against it.
+- **/record — screen recording:** `/record` shows the duration
+  buttons (1 / 3 / 5 / 10 / 15 / 20 / 30 minutes), or type
+  `/record <minutes>` for any 1–60 minutes; `/record stop` stops
+  early, `/record status` shows what is left. The recording runs
+  silently — no window, sound or indicator on the PC — and the
+  finished video is sent to the owner's Telegram chat by itself.
+  Frames are JPEGs captured with GDI+ (capped at 960 px wide, at
+  most 700 frames, so the file stays under Telegram's 50 MB limit);
+  when ffmpeg is on the PC the frames become a small H.264 MP4
+  (sent as a video), otherwise an MJPEG AVI written by DeskAudit
+  itself (sent as a document — plays in VLC / Windows Media
+  Player). Frames and the video are deleted after sending. Like
+  /screenshot, a recording shows screen content (typed text,
+  messages) — it happens only on the owner's command, only to her
+  chat, and staff must be told the PCs are monitored. CLI test:
+  `DeskAudit.exe --record-test <seconds>` records a few seconds
+  and prints the video path (test only).
+
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
 problems, and finished the explorer in every direction:
@@ -838,7 +884,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.13.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.14.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -880,7 +926,7 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.13-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.14-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**

@@ -171,6 +171,25 @@ def send_photo(token: str, chat_id: str, path: str | Path,
     return bool(result and result.get("ok"))
 
 
+def send_video(token: str, chat_id: str, path: str | Path,
+               caption: str = "") -> bool:
+    """Send a local video as a Telegram video (e.g. a screen
+    recording). Returns True only when Telegram answered ok. Never
+    raises. Telegram accepts at most 50 MB per file."""
+    if not token or not chat_id:
+        return False
+    try:
+        data = Path(path).read_bytes()
+    except Exception as exc:
+        _log.warning("Telegram sendVideo: cannot read %s: %s", path, exc)
+        return False
+    result = _post_multipart(token, "sendVideo",
+                             {"chat_id": chat_id, "caption": caption[:1024]},
+                             "video", Path(path).name, data,
+                             timeout=300)
+    return bool(result and result.get("ok"))
+
+
 def answer_callback(token: str, callback_query_id: str,
                     text: str = "") -> None:
     """Acknowledge an inline-button tap (stops the spinner). Never
@@ -915,6 +934,7 @@ HELP_TEXT = (
     "  🗑 /deleted — ডিলিট হওয়া ফাইল, যা সুরক্ষায় লুকিয়ে আছে\n"
     "🎛️ নিয়ন্ত্রণ:\n"
     "  ⬜ /screen white | /screen black | /screen off — স্ক্রিন ঢাকা/খোলা\n"
+    "  🎥 /record [মিনিট] — স্ক্রিন রেকর্ড (১/৩/৫/১০/১৫/২০/৩০ মিনিট, বা /record ৭) | /record stop — থামানো | /record status — অবস্থা\n"
     "  🔒 /lock — কম্পিউটার লক করা\n"
     "  ❌ /close <অ্যাপ> — চলমান অ্যাপ বন্ধ (নিশ্চিতকরণ লাগবে)\n"
     "  🧊 /freeze <অ্যাপ> — অ্যাপ স্থগিত | /unfreeze <অ্যাপ> — আবার চালু\n"
@@ -956,6 +976,7 @@ def menu_keyboard() -> dict:
         [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("❓ সাহায্য", "m:help")],
         # 🎛️ নিয়ন্ত্রণ — one tap, or a prompt for what is needed.
         [btn("⬜ স্ক্রিন", "m:screen"), btn("🔒 কম্পিউটার লক", "m:lock")],
+        [btn("🎥 স্ক্রিন রেকর্ড", "m:record")],
         [btn("❌ অ্যাপ বন্ধ", "m:close"), btn("🧊 অ্যাপ স্থগিত", "m:freeze")],
         [btn("⏸ বিরতি", "m:pause"), btn("▶️ আবার চালু", "m:resume")],
         [btn("🔕 চুপ করো", "m:mute"), btn("🔔 আবার চালু", "m:unmute")],
@@ -977,6 +998,21 @@ def screen_keyboard() -> dict:
          btn("⬛ কালো করো", "m:screen_black")],
         [btn("🔓 খুলে দাও", "m:screen_off"),
          btn("🔙 মেনু", "m:menu")],
+    ]}
+
+
+def record_keyboard() -> dict:
+    """Sub-menu for /record: pick a duration, or stop / check the
+    recording that is already running (v12.14)."""
+    def btn(text, data):
+        return {"text": text, "callback_data": data}
+
+    return {"inline_keyboard": [
+        [btn("1 মিনিট", "m:record_1"), btn("3 মিনিট", "m:record_3")],
+        [btn("5 মিনিট", "m:record_5"), btn("10 মিনিট", "m:record_10")],
+        [btn("15 মিনিট", "m:record_15"), btn("20 মিনিট", "m:record_20")],
+        [btn("30 মিনিট", "m:record_30"), btn("📊 অবস্থা", "m:record_status")],
+        [btn("⏹️ থামাও", "m:record_stop"), btn("🔙 মেনু", "m:menu")],
     ]}
 
 
@@ -1114,9 +1150,18 @@ class TelegramBot:
         self.tagger = tagger
         self.delete_protector = delete_protector
         self.file_explorer = file_explorer
+        self._recorder = None  # created lazily: ScreenRecorder (v12.14)
         self.reports_dir = (Path(reports_dir) if reports_dir else
                             (self.project_root / "reports"
                              if self.project_root else Path("reports")))
+        # v12.14: update_ids answered by THIS process. The stored offset
+        # normally keeps an update from being answered twice, but if the
+        # offset save ever fails (DB busy) the next poll re-fetches the
+        # same updates — without this set the same command would be
+        # answered a second time. Bounded: cleared once it grows past
+        # 1000 entries (the offset is the real guard; this is the
+        # safety net for a single process lifetime).
+        self._handled_update_ids: set[int] = set()
 
     @property
     def configured(self) -> bool:
@@ -1145,6 +1190,24 @@ class TelegramBot:
         ok = send_long(self.token, self.chat_id, text)
         if not ok:
             self.log.warning("Telegram send failed (check bot token / chat id).")
+        return ok
+
+    def send_video(self, path: str | Path, caption: str = "") -> bool:
+        """Send a local video file to the owner's chat. Never raises."""
+        if not self.configured:
+            return False
+        ok = send_video(self.token, self.chat_id, path, caption)
+        if not ok:
+            self.log.warning("Telegram sendVideo failed (check bot token / chat id).")
+        return ok
+
+    def send_file(self, path: str | Path, caption: str = "") -> bool:
+        """Send a local file as a Telegram document. Never raises."""
+        if not self.configured:
+            return False
+        ok = send_document(self.token, self.chat_id, path, caption)
+        if not ok:
+            self.log.warning("Telegram sendDocument failed (check bot token / chat id).")
         return ok
 
     def send_markup(self, text: str, reply_markup: dict) -> bool:
@@ -1530,6 +1593,105 @@ class TelegramBot:
             self.send("📄 রিপোর্ট পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
 
     # -- screenshots -----------------------------------------------------
+    # -- screen recording (v12.14) ----------------------------------
+    @property
+    def recorder(self):
+        """The bot's ScreenRecorder, created on first use. None when
+        the agent's folder is unknown (no place to keep frames)."""
+        if self._recorder is None and self.project_root is not None:
+            from .screen_record import ScreenRecorder
+
+            self._recorder = ScreenRecorder(
+                self.project_root, self.log,
+                on_done=self._on_recording_done)
+        return self._recorder
+
+    def _on_recording_done(self, video, kind, minutes: int, frames: int) -> None:
+        """Called (in the recorder thread) when a recording finishes.
+        Sends the video to the owner's chat, then deletes it — like
+        a screenshot, nothing is kept after sending."""
+        if video is None:
+            if frames < 2:
+                self.send("🎥 রেকর্ড খুব ছোট হয়েছে — ভিডিও বানানো যায়নি। "
+                          "আরেকবার চেষ্টা করুন।")
+            else:
+                self.send(f"🎥 রেকর্ড শেষ হয়েছে কিন্তু ভিডিও বানানো যায়নি — "
+                          f"{frames}টি ফ্রেম ধরা পড়েছিল।")
+            return
+        caption = f"🎥 স্ক্রিন রেকর্ড — {minutes} মিনিট ({frames} ফ্রেম)"
+        try:
+            if kind == "mp4":
+                ok = self.send_video(video, caption)
+            else:
+                ok = self.send_file(video, caption)
+            if ok:
+                self.send("🎥 রেকর্ড পাঠিয়ে দেওয়া হয়েছে।")
+            else:
+                self.send("🎥 ভিডিও পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
+        finally:
+            try:
+                parent = Path(video).parent
+                Path(video).unlink(missing_ok=True)
+                parent.rmdir()  # the run dir is empty now
+            except Exception:
+                pass
+
+    def start_recording(self, minutes) -> None:
+        """Start a screen recording for `minutes` minutes."""
+        import sys
+
+        from .screen_record import validate_minutes
+
+        try:
+            minutes = validate_minutes(minutes)
+        except ValueError as exc:
+            self.send(str(exc))
+            return
+        if sys.platform != "win32":
+            self.send("🎥 স্ক্রিন রেকর্ড শুধু Windows PC-তে চলে।")
+            return
+        rec = self.recorder
+        if rec is None:
+            self.send("🎥 রেকর্ড করা যাচ্ছে না — এজেন্টের ফোল্ডার জানা নেই।")
+            return
+        ok, msg = rec.start(minutes)
+        self.send(msg)
+
+    def stop_recording(self) -> None:
+        """Stop the running recording early (the video so far is sent)."""
+        rec = self.recorder
+        if rec is None:
+            self.send("🎥 এখন কোনো রেকর্ড চলছে না।")
+            return
+        _ok, msg = rec.stop()
+        self.send(msg)
+
+    def recording_status(self) -> None:
+        """Report whether a recording is running and how long is left."""
+        rec = self.recorder
+        if rec is None:
+            self.send("🎥 এখন কোনো রেকর্ড চলছে না।")
+            return
+        st = rec.status()
+        if not st["running"]:
+            self.send("🎥 এখন কোনো রেকর্ড চলছে না।")
+            return
+        elapsed = st["elapsed_seconds"]
+        left = max(0, st["minutes"] * 60 - elapsed)
+        self.send(f"🎥 রেকর্ড চলছে — {st['minutes']} মিনিটের মধ্যে "
+                  f"{elapsed // 60} মিনিট {elapsed % 60:02d} সেকেন্ড হয়েছে, "
+                  f"আরও {left // 60} মিনিট {left % 60:02d} সেকেন্ড বাকি "
+                  f"({st['frames']} ফ্রেম ধরা পড়েছে)। থামাতে /record stop লিখুন।")
+
+    def show_record_menu(self) -> None:
+        """Duration picker for /record (like the /screen sub-menu)."""
+        self.send_markup(
+            "🎥 কত মিনিট রেকর্ড করব?\n"
+            "রেকর্ড চুপচাপ চলবে — PC-তে কোনো উইন্ডো, শব্দ বা চিহ্ন দেখা যাবে না। "
+            "শেষ হলে ভিডিও এখানেই পাঠিয়ে দেওয়া হবে।\n"
+            "অন্য সময় চাইলে /record <মিনিট> লিখুন (১–৬০)।",
+            record_keyboard())
+
     def send_screenshot(self) -> None:
         """Capture the PC's screen and send it as a Telegram photo.
         On demand only, and only to the owner's chat — a screenshot
@@ -2777,6 +2939,15 @@ class TelegramBot:
                 self.send(self.set_screen("off"))
             else:
                 self.send("⬜ ব্যবহার: /screen white, /screen black অথবা /screen off")
+        elif cmd == "/record":
+            if not args:
+                self.show_record_menu()
+            elif args[0].lower() in ("stop", "থামাও"):
+                self.stop_recording()
+            elif args[0].lower() in ("status", "অবস্থা"):
+                self.recording_status()
+            else:
+                self.start_recording(args[0])
         elif cmd == "/shutdown":
             self.request_shutdown(restart=False)
         elif cmd == "/restart":
@@ -2949,6 +3120,16 @@ class TelegramBot:
                 self.send(self.set_screen("black"))
             elif cmd == "screen_off":
                 self.send(self.set_screen("off"))
+            elif cmd == "record":
+                self.show_record_menu()
+            elif cmd.startswith("record_"):
+                arg = cmd[len("record_"):]
+                if arg == "stop":
+                    self.stop_recording()
+                elif arg == "status":
+                    self.recording_status()
+                else:
+                    self.start_recording(arg)
             elif cmd == "lock":
                 self.send(self.lock_pc())
             elif cmd == "close":
@@ -3037,6 +3218,16 @@ class TelegramBot:
         for upd in updates:
             try:
                 max_id = upd.get("update_id", max_id)
+                uid = upd.get("update_id")
+                # v12.14: never answer the same update twice in this
+                # process — a failed offset save (or a double delivery)
+                # re-fetches the same updates on the next poll.
+                if uid is not None:
+                    if uid in self._handled_update_ids:
+                        continue
+                    self._handled_update_ids.add(uid)
+                    if len(self._handled_update_ids) > 1000:
+                        self._handled_update_ids.clear()
                 cb = upd.get("callback_query") or {}
                 if cb:
                     chat = str(((cb.get("from") or {}).get("id", "")))
@@ -3060,6 +3251,11 @@ class TelegramBot:
         if max_id is not None:
             try:
                 self.db.set_state("telegram_update_offset", str(int(max_id) + 1))
-            except Exception:
-                pass
+            except Exception as exc:
+                # v12.14: a silent failure here used to re-answer every
+                # command on the next poll (the offset never advanced).
+                # The in-memory _handled_update_ids set is the safety
+                # net for this process, but the log line makes the
+                # failure visible instead of silent.
+                self.log.warning("Could not save Telegram offset: %s", exc)
         return handled

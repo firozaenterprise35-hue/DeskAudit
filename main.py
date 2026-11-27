@@ -107,11 +107,16 @@ def merge_db_overrides(db: Database, tagger: Tagger) -> None:
 
 def setup_logging(log_path: Path) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # force=True: basicConfig is a no-op when the root logger already
+    # has handlers (e.g. pytest's log-capture handler), which left
+    # the log file empty and broke test_windowed under pytest. The
+    # agent calls this once at startup, so forcing is safe.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[logging.FileHandler(log_path, encoding="utf-8"),
                   logging.StreamHandler(sys.stdout)],
+        force=True,
     )
     return logging.getLogger("deskaudit")
 
@@ -124,12 +129,34 @@ def run_agent(config: Config, log: logging.Logger) -> int:
     # over the live WAL database.
     agent_lock = None
     try:
-        from deskaudit.backup import acquire_agent_lock
-        agent_lock = acquire_agent_lock(config.project_root)
+        from deskaudit.backup import try_acquire_agent_lock
+        agent_lock, _lock_reason = try_acquire_agent_lock(config.project_root)
+        if agent_lock is None and _lock_reason == "held":
+            # v12.14: a second DeskAudit.exe used to keep running
+            # alongside the first — both polled Telegram with the same
+            # stored offset, so the same command was answered twice,
+            # and both sent every "new program" alert, so that message
+            # arrived twice at the same time. A second agent now stops
+            # itself at once (exit code 2) and tells the owner why
+            # with a toast. The lock is an OS file lock, released when
+            # the holding process dies, so a crashed agent can never
+            # block a restart. (A lock-file OPEN failure is different
+            # — permissions — and only warns, as before.)
+            msg = ("DeskAudit আগেই চলছে — এই কপিটি বন্ধ হয়ে গেল। "
+                   "Task Manager → Details-এ DeskAudit.exe একটাই থাকা উচিত।")
+            log.warning("Another DeskAudit agent is already running — "
+                        "this copy stops itself. %s", msg)
+            try:
+                from deskaudit.alerts import notify_windows_text
+                notify_windows_text("DeskAudit আগেই চলছে", msg)
+            except Exception:
+                pass
+            db.close()
+            return 2
         if agent_lock is None:
-            log.warning("Another DeskAudit agent appears to be running "
-                        "(agent lock is held). This instance keeps running, "
-                        "but restores are blocked until all agents stop.")
+            log.warning("Could not take the agent lock (lock file could "
+                        "not be opened) — this instance keeps running, "
+                        "but the single-instance guard is off.")
     except Exception as exc:
         log.warning("Could not take the agent lock: %s", exc)
     tagger = load_tagger(config)
@@ -345,8 +372,8 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         except Exception as exc:  # the gate must never crash the agent
             log.warning("Secret gate did not start: %s", exc)
 
-    log.info("DeskAudit running. Poll every %ss, idle after %ss. Ctrl+C to stop.",
-             config.poll_interval_seconds, config.idle_threshold_seconds)
+    log.info("DeskAudit running (pid %s). Poll every %ss, idle after %ss. Ctrl+C to stop.",
+             os.getpid(), config.poll_interval_seconds, config.idle_threshold_seconds)
     try:
         watcher_paused = False
         while True:
@@ -703,6 +730,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Send the current status to Telegram now")
     parser.add_argument("--screenshot", default=None, metavar="PATH",
                         help="Capture the screen as a PNG (Windows only) and save it to PATH")
+    parser.add_argument("--record-test", type=int, default=None, metavar="SECONDS",
+                        help="Record the screen for SECONDS (3-120, Windows only) and print the video path (test only)")
     parser.add_argument("--screen-test", default=None, metavar="COLOR",
                         help="Show the fullscreen white/black overlay for --screen-seconds (test only)")
     parser.add_argument("--screen-seconds", type=int, default=5,
@@ -1044,6 +1073,34 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Screenshot failed: {exc}")
             return 1
         print(f"Screenshot saved: {out} ({out.stat().st_size} bytes)")
+        return 0
+
+    if args.record_test is not None:
+        import threading as _threading
+
+        from deskaudit.screen_record import ScreenRecorder
+
+        done = _threading.Event()
+        result = {}
+
+        def _on_done(video, kind, minutes, frames):
+            result.update(video=video, kind=kind, frames=frames)
+            done.set()
+
+        rec = ScreenRecorder(config.project_root, log, on_done=_on_done)
+        ok, msg = rec.start_test(args.record_test)
+        print(msg)
+        if not ok:
+            return 1
+        if not done.wait(args.record_test + 120):
+            print("Record test timed out.")
+            return 1
+        video = result.get("video")
+        if video is None:
+            print(f"Record test: no video ({result.get('frames', 0)} frames).")
+            return 1
+        print(f"Record test: {video} ({result.get('kind')}, "
+              f"{result.get('frames')} frames, {video.stat().st_size} bytes)")
         return 0
 
     if args.screen_test:

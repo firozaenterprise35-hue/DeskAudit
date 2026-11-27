@@ -41,13 +41,20 @@ def agent_lock_path(project_root: str | Path) -> Path:
     return Path(project_root) / "data" / "agent.lock"
 
 
-def acquire_agent_lock(project_root: str | Path):
+def try_acquire_agent_lock(project_root: str | Path):
     """Take the agent's exclusive lock (held while the agent runs).
-    Returns an open file handle, or None when another DeskAudit
-    agent already holds it. v12.13 audit (M14): `--restore` used to
-    copy a backup over the LIVE database (WAL mode) with only a
-    printed warning — the safety copy could miss uncheckpointed WAL
-    data and the agent's next write landed in the restored file."""
+
+    Returns (handle, reason): reason is "ok" when the lock was taken,
+    "held" when another live DeskAudit agent already holds it, or
+    "error" when the lock file itself could not be opened (permissions
+    — the agent should keep running in that case, it only loses the
+    single-instance guard). The lock is an OS file lock (msvcrt on
+    Windows, flock elsewhere), so it is released automatically when
+    the holding process dies — a crashed agent can never block a
+    restart. v12.14: the two reasons must be told apart, because a
+    "held" lock now stops the second agent from starting (it used to
+    only warn and keep running, which doubled every Telegram reply
+    and every new-program alert)."""
     import sys
 
     path = agent_lock_path(project_root)
@@ -55,7 +62,7 @@ def acquire_agent_lock(project_root: str | Path):
     try:
         fh = path.open("a+b")
     except OSError:
-        return None
+        return None, "error"
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -68,7 +75,20 @@ def acquire_agent_lock(project_root: str | Path):
             fh.close()
         except Exception:
             pass
-        return None
+        return None, "held"
+    return fh, "ok"
+
+
+def acquire_agent_lock(project_root: str | Path):
+    """Take the agent's exclusive lock (held while the agent runs).
+    Returns an open file handle, or None when another DeskAudit
+    agent already holds it (or the lock file could not be opened).
+    v12.13 audit (M14): `--restore` used to copy a backup over the
+    LIVE database (WAL mode) with only a printed warning — the safety
+    copy could miss uncheckpointed WAL data and the agent's next write
+    landed in the restored file. Use `try_acquire_agent_lock` when
+    the reason for a failure matters."""
+    fh, _reason = try_acquire_agent_lock(project_root)
     return fh
 
 

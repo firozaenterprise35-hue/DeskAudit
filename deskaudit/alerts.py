@@ -403,16 +403,12 @@ def save_alerts(db: Database, alerts: list[Alert]) -> list[Alert]:
     return new
 
 
-def notify_windows(alerts: list[Alert]) -> bool:
-    """Best-effort Windows toast notification. Returns False on Linux /
-    when no notifier is available — never raises.
-
-    Only the PowerShell toast path is used: the old plyer path is gone
-    (plyer was never in requirements.txt, so it could never run), and
-    the old code returned True unconditionally even when PowerShell
-    failed — now the result is actually checked.
-    """
-    if not alerts or sys.platform != "win32":
+def notify_windows_text(title: str, body: str) -> bool:
+    """Best-effort Windows toast notification with an arbitrary title
+    and body. Returns False on Linux / when no notifier is available —
+    never raises. v12.14: the single-instance guard uses this to tell
+    the owner why a second DeskAudit copy stopped itself."""
+    if sys.platform != "win32":
         return False
     # v12.13 (C-m10): alert titles come from window/file names, so they
     # can contain &, <, >, $() or quotes — escape them for BOTH the
@@ -422,8 +418,8 @@ def notify_windows(alerts: list[Alert]) -> bool:
         text = text.replace("`", "``").replace("$", "`$").replace('"', '`"')
         return (text.replace("&", "&amp;").replace("<", "&lt;")
                     .replace(">", "&gt;"))
-    title = _esc(f"DeskAudit: {len(alerts)}টি অ্যালার্ট")
-    body = _esc("\n".join(a.title for a in alerts[:3]))
+    title = _esc(title)
+    body = _esc(body)
     ps = (
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
         "ContentType = WindowsRuntime] | Out-Null; "
@@ -447,3 +443,19 @@ def notify_windows(alerts: list[Alert]) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+def notify_windows(alerts: list[Alert]) -> bool:
+    """Best-effort Windows toast notification. Returns False on Linux /
+    when no notifier is available — never raises.
+
+    Only the PowerShell toast path is used: the old plyer path is gone
+    (plyer was never in requirements.txt, so it could never run), and
+    the old code returned True unconditionally even when PowerShell
+    failed — now the result is actually checked.
+    """
+    if not alerts:
+        return False
+    title = f"DeskAudit: {len(alerts)}টি অ্যালার্ট"
+    body = "\n".join(a.title for a in alerts[:3])
+    return notify_windows_text(title, body)
