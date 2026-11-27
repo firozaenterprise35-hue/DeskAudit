@@ -259,7 +259,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3, dispose-before-shutdown fix in v12.14.4)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -676,6 +676,8 @@ startup log line, so Task Manager can be checked against it.
 
 **Access-violation fix (v12.14.3)** — her /record failed with 'exception: access violation reading 0x000002046D4A1F28'. Root cause, verified: ctypes had no declared signatures, so every call assumed 32-bit ints — and the GDI+ token (ULONG_PTR, 8 bytes on 64-bit Windows) was kept in a 4-byte c_ulong, so GdiplusStartup wrote 8 bytes into a 4-byte buffer and corrupted the heap. Wine returns a fake 32-bit token, which is why no test here ever saw it. Every GDI/GDI+ call in the recorder and in /screenshot now has its real argtypes/restype, the token is pointer-sized (c_void_p), and Windows ULONG fields are c_uint32 (c_ulong is 8 bytes on Linux). No admin mode is needed — this was a memory bug, not a permission problem; capture works as a normal user.
 
+**Dispose-before-shutdown fix (v12.14.4)** — the access violation came back after the v12.14.3 token fix, so the audit went one step deeper and found the real cause: GdiplusShutdown ran while the captured bitmaps were still alive, and the bitmaps were disposed AFTER the shutdown — disposing after shutdown dereferences freed GDI+ state and crashes on real Windows (Wine tolerates it, which is why no test here ever saw it). Bitmaps are now disposed before the shutdown, every native call is wrapped so a future failure names the exact call (e.g. 'GdipSaveImageToFile: access violation...'), and the agent log now keeps the full traceback. A fake-DLL test locks the dispose-before-shutdown order in place.
+
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
 problems, and finished the explorer in every direction:
@@ -890,7 +892,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.14.3.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.14.4.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -932,7 +934,7 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.14.3-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.14.4-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**

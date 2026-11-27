@@ -344,6 +344,133 @@ def test_bind_native_noop_on_linux():
     print("bind native noop on linux passed")
 
 
+def test_call_labels_native_crash():
+    """v12.14.4: when a native call crashes, _call names the call
+    instead of leaving a bare address in the message."""
+    from deskaudit.screen_record import _call
+
+    def boom():
+        raise OSError(
+            "exception: access violation reading 0x000002046D4A1F28")
+
+    try:
+        _call("GdipSaveImageToFile", boom)
+    except RuntimeError as exc:
+        assert "GdipSaveImageToFile" in str(exc)
+        assert "access violation" in str(exc)
+    else:
+        raise AssertionError("_call did not raise")
+    assert _call("ok", lambda: 7) == 7
+    print("call labels native crash passed")
+
+
+def test_capture_disposes_before_shutdown():
+    """v12.14.4: GDI+ objects MUST be disposed before GdiplusShutdown.
+    The old code shut GDI+ down first and disposed the bitmaps after —
+    disposing after shutdown dereferences freed GDI+ state and crashes
+    with an access violation on real Windows (Wine tolerates it, which
+    is why no test here saw it, and why the v12.14.3 token fix alone
+    did not stop the crash). Fake the native DLLs and assert the
+    call order."""
+    import ctypes
+    import sys
+    from types import SimpleNamespace
+
+    from deskaudit import screen_record as sr
+
+    calls = []
+
+    def _set_out(arg, value):
+        # arg is a byref() to a c_void_p: fill the out-param.
+        try:
+            arg._obj.value = value
+        except Exception:
+            ctypes.cast(arg,
+                        ctypes.POINTER(ctypes.c_void_p)).contents.value = value
+
+    def _rec(name, result=0):
+        def fn(*args):
+            calls.append(name)
+            return result
+        return fn
+
+    def _metrics(i):
+        calls.append("GetSystemMetrics")
+        return {76: 0, 77: 0, 78: 1280, 79: 800}[i]
+
+    def _from_hbitmap(hbm, pal, bmp_p):
+        calls.append("GdipCreateBitmapFromHBITMAP")
+        _set_out(bmp_p, 21)
+        return 0
+
+    def _from_scan0(w, h, stride, fmt, scan0, bmp_p):
+        calls.append("GdipCreateBitmapFromScan0")
+        _set_out(bmp_p, 22)
+        return 0
+
+    def _get_graphics(bmp, g_p):
+        calls.append("GdipGetImageGraphicsContext")
+        _set_out(g_p, 23)
+        return 0
+
+    fake = SimpleNamespace(
+        user32=SimpleNamespace(
+            GetSystemMetrics=_metrics,
+            GetDC=_rec("GetDC", 11),
+            ReleaseDC=_rec("ReleaseDC", 1)),
+        gdi32=SimpleNamespace(
+            CreateCompatibleDC=_rec("CreateCompatibleDC", 12),
+            CreateCompatibleBitmap=_rec("CreateCompatibleBitmap", 13),
+            SelectObject=_rec("SelectObject", 14),
+            BitBlt=_rec("BitBlt", 1),
+            DeleteObject=_rec("DeleteObject", 1),
+            DeleteDC=_rec("DeleteDC", 1)),
+        gdiplus=SimpleNamespace(
+            GdiplusStartup=_rec("GdiplusStartup", 0),
+            GdiplusShutdown=_rec("GdiplusShutdown", 0),
+            GdipCreateBitmapFromHBITMAP=_from_hbitmap,
+            GdipCreateBitmapFromScan0=_from_scan0,
+            GdipGetImageGraphicsContext=_get_graphics,
+            GdipDrawImageRectI=_rec("GdipDrawImageRectI", 0),
+            GdipDeleteGraphics=_rec("GdipDeleteGraphics", 0),
+            GdipSaveImageToFile=_rec("GdipSaveImageToFile", 0),
+            GdipGetImageEncodersSize=_rec("GdipGetImageEncodersSize", 0),
+            GdipGetImageEncoders=_rec("GdipGetImageEncoders", 0),
+            GdipDisposeImage=_rec("GdipDisposeImage", 0)),
+    )
+
+    old_platform = sys.platform
+    had_windll = hasattr(ctypes, "windll")
+    old_windll = getattr(ctypes, "windll", None)
+    old_clsid = sr._jpeg_encoder_clsid
+    old_bound = sr._NATIVE_BOUND
+    sr._jpeg_encoder_clsid = lambda gdiplus: b"\x01" * 16
+    try:
+        sys.platform = "win32"
+        ctypes.windll = fake
+        sr._NATIVE_BOUND = False
+        with tempfile.TemporaryDirectory() as tmp:
+            out = sr.capture_jpeg_frame(
+                str(Path(tmp) / "frame.jpg"))
+            assert out.name == "frame.jpg"
+        assert "GdipSaveImageToFile" in calls
+        assert "GdiplusShutdown" in calls
+        disposes = [i for i, c in enumerate(calls)
+                    if c == "GdipDisposeImage"]
+        assert len(disposes) == 2, calls  # scaled + bitmap
+        shut = calls.index("GdiplusShutdown")
+        assert all(i < shut for i in disposes), calls
+    finally:
+        sys.platform = old_platform
+        if had_windll:
+            ctypes.windll = old_windll
+        else:
+            del ctypes.windll
+        sr._jpeg_encoder_clsid = old_clsid
+        sr._NATIVE_BOUND = old_bound
+    print("capture disposes before shutdown passed")
+
+
 if __name__ == "__main__":
     test_validate_minutes()
     test_frame_interval_seconds()
@@ -359,4 +486,6 @@ if __name__ == "__main__":
     test_native_struct_sizes()
     test_token_is_pointer_sized()
     test_bind_native_noop_on_linux()
+    test_call_labels_native_crash()
+    test_capture_disposes_before_shutdown()
     print("ALL SCREEN RECORD TESTS PASSED")

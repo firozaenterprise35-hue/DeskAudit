@@ -210,6 +210,17 @@ def find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
 
 
+def _call(label: str, func, *args):
+    """Call one native function; if it crashes (an access violation
+    reaches Python as OSError), say WHICH call it was. A bare address
+    tells the owner nothing; 'GdipSaveImageToFile: exception: access
+    violation reading 0x...' tells us exactly where to look next."""
+    try:
+        return func(*args)
+    except Exception as exc:
+        raise RuntimeError(f"{label}: {exc}") from exc
+
+
 def screen_locked_reason() -> str | None:
     """Why the screen cannot be captured right now, or None when it
     can (or when we cannot tell). Windows only; never raises.
@@ -275,17 +286,18 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = 76, 77
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 78, 79
     SRCCOPY = 0x00CC0020
-    x0 = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
-    y0 = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
-    w = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
-    h = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    x0 = _call("GetSystemMetrics", user32.GetSystemMetrics, SM_XVIRTUALSCREEN)
+    y0 = _call("GetSystemMetrics", user32.GetSystemMetrics, SM_YVIRTUALSCREEN)
+    w = _call("GetSystemMetrics", user32.GetSystemMetrics, SM_CXVIRTUALSCREEN)
+    h = _call("GetSystemMetrics", user32.GetSystemMetrics, SM_CYVIRTUALSCREEN)
     if w <= 0 or h <= 0:
         raise RuntimeError("could not read screen size")
-    hdc_screen = user32.GetDC(0)
+    hdc_screen = _call("GetDC", user32.GetDC, 0)
     if not hdc_screen:
         raise RuntimeError("could not open the screen device")
-    hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-    hbm = gdi32.CreateCompatibleBitmap(hdc_screen, w, h)
+    hdc_mem = _call("CreateCompatibleDC", gdi32.CreateCompatibleDC, hdc_screen)
+    hbm = _call("CreateCompatibleBitmap", gdi32.CreateCompatibleBitmap,
+                hdc_screen, w, h)
     # v12.14.3: the token MUST be pointer-sized. The old code used
     # ctypes.c_ulong (4 bytes); GdiplusStartup writes an 8-byte
     # ULONG_PTR into it on 64-bit Windows, corrupting the heap and
@@ -296,33 +308,42 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
     try:
         if not hdc_mem or not hbm:
             raise RuntimeError("could not allocate the capture bitmap")
-        gdi32.SelectObject(hdc_mem, hbm)
-        if not gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, x0, y0, SRCCOPY):
+        _call("SelectObject", gdi32.SelectObject, hdc_mem, hbm)
+        if not _call("BitBlt", gdi32.BitBlt, hdc_mem, 0, 0, w, h,
+                     hdc_screen, x0, y0, SRCCOPY):
             raise RuntimeError("screen copy failed")
 
         inp = GdiplusStartupInput(1, None, 0, 0)
-        if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(inp), None) != 0:
+        if _call("GdiplusStartup", gdiplus.GdiplusStartup,
+                 ctypes.byref(token), ctypes.byref(inp), None) != 0:
             raise RuntimeError("GDI+ could not start")
         try:
-            if gdiplus.GdipCreateBitmapFromHBITMAP(hbm, None, ctypes.byref(bitmap)) != 0:
+            if _call("GdipCreateBitmapFromHBITMAP",
+                     gdiplus.GdipCreateBitmapFromHBITMAP,
+                     hbm, None, ctypes.byref(bitmap)) != 0:
                 raise RuntimeError("GDI+ could not read the capture")
             save_bitmap = bitmap
             if w > width:
                 tw = width
                 th = max(1, round(h * width / w))
-                if gdiplus.GdipCreateBitmapFromScan0(
-                        tw, th, 0, 0x26200A, None, ctypes.byref(scaled)) != 0:
+                if _call("GdipCreateBitmapFromScan0",
+                         gdiplus.GdipCreateBitmapFromScan0,
+                         tw, th, 0, 0x26200A, None,
+                         ctypes.byref(scaled)) != 0:
                     raise RuntimeError("GDI+ could not make the scaled bitmap")
                 graphics = ctypes.c_void_p(0)
-                if gdiplus.GdipGetImageGraphicsContext(
-                        scaled, ctypes.byref(graphics)) != 0:
+                if _call("GdipGetImageGraphicsContext",
+                         gdiplus.GdipGetImageGraphicsContext,
+                         scaled, ctypes.byref(graphics)) != 0:
                     raise RuntimeError("GDI+ could not draw the scaled frame")
                 try:
-                    if gdiplus.GdipDrawImageRectI(
-                            graphics, bitmap, 0, 0, tw, th) != 0:
+                    if _call("GdipDrawImageRectI",
+                             gdiplus.GdipDrawImageRectI,
+                             graphics, bitmap, 0, 0, tw, th) != 0:
                         raise RuntimeError("GDI+ could not scale the frame")
                 finally:
-                    gdiplus.GdipDeleteGraphics(graphics)
+                    _call("GdipDeleteGraphics", gdiplus.GdipDeleteGraphics,
+                          graphics)
                 save_bitmap = scaled
             clsid = _jpeg_encoder_clsid(gdiplus)
             if clsid is None:
@@ -330,23 +351,31 @@ def capture_jpeg_frame(path: str | Path, width: int = FRAME_WIDTH,
             # Keep the 16 CLSID bytes in a live buffer for the call.
             clsid_buf = (ctypes.c_ubyte * 16).from_buffer_copy(clsid)
             params = _quality_params(quality)
-            status = gdiplus.GdipSaveImageToFile(
-                save_bitmap, str(out), ctypes.byref(clsid_buf),
-                ctypes.byref(params) if params is not None else None)
+            status = _call("GdipSaveImageToFile", gdiplus.GdipSaveImageToFile,
+                           save_bitmap, str(out), ctypes.byref(clsid_buf),
+                           ctypes.byref(params) if params is not None else None)
             if status != 0:
                 raise RuntimeError(f"GDI+ could not save the JPEG (status {status})")
         finally:
-            gdiplus.GdiplusShutdown(token)
+            # v12.14.4: dispose EVERY GDI+ object BEFORE shutting GDI+
+            # down. The old code shut down first and disposed the
+            # bitmaps after — disposing after shutdown dereferences
+            # freed GDI+ state and crashes with an access violation
+            # on real Windows (Wine tolerates it, which is why no
+            # test here ever saw it). This was the remaining cause
+            # after the v12.14.3 token fix.
+            if scaled:
+                _call("GdipDisposeImage", gdiplus.GdipDisposeImage, scaled)
+            if bitmap:
+                _call("GdipDisposeImage", gdiplus.GdipDisposeImage, bitmap)
+            _call("GdiplusShutdown", gdiplus.GdiplusShutdown, token)
     finally:
-        if bitmap:
-            gdiplus.GdipDisposeImage(bitmap)
-        if scaled:
-            gdiplus.GdipDisposeImage(scaled)
+        # Plain GDI cleanup only — the GDI+ objects are already gone.
         if hbm:
-            gdi32.DeleteObject(hbm)
+            _call("DeleteObject", gdi32.DeleteObject, hbm)
         if hdc_mem:
-            gdi32.DeleteDC(hdc_mem)
-        user32.ReleaseDC(0, hdc_screen)
+            _call("DeleteDC", gdi32.DeleteDC, hdc_mem)
+        _call("ReleaseDC", user32.ReleaseDC, 0, hdc_screen)
     return out
 
 
@@ -355,12 +384,14 @@ def _jpeg_encoder_clsid(gdiplus):
     _bind_native()
     num = ctypes.c_uint(0)
     size = ctypes.c_uint(0)
-    gdiplus.GdipGetImageEncodersSize(ctypes.byref(num), ctypes.byref(size))
+    _call("GdipGetImageEncodersSize", gdiplus.GdipGetImageEncodersSize,
+          ctypes.byref(num), ctypes.byref(size))
     if not size.value:
         return None
     buf = ctypes.create_string_buffer(size.value)
 
-    gdiplus.GdipGetImageEncoders(num, size, buf)
+    _call("GdipGetImageEncoders", gdiplus.GdipGetImageEncoders,
+          num, size, buf)
     for i in range(num.value):
         info = ImageCodecInfo.from_address(
             ctypes.addressof(buf) + i * ctypes.sizeof(ImageCodecInfo))
@@ -663,7 +694,10 @@ class ScreenRecorder:
                         self._consecutive_failures += 1
                         failed = self._consecutive_failures
                     if self.log is not None:
-                        self.log.warning("Screen record frame failed: %s", exc)
+                        # v12.14.4: the traceback too — the agent log
+                        # on the PC then holds the exact failing call.
+                        self.log.warning("Screen record frame failed: %s",
+                                         exc, exc_info=True)
                     if failed >= MAX_CONSECUTIVE_FAILURES:
                         # The screen cannot be captured at all (locked
                         # screen is the usual cause) — stop now and
