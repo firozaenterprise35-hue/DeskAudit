@@ -1097,7 +1097,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         video = result.get("video")
         if video is None:
-            print(f"Record test: no video ({result.get('frames', 0)} frames).")
+            err = rec.last_error
+            print(f"Record test: no video ({result.get('frames', 0)} frames)."
+                  + (f" Last error: {err}" if err else ""))
             return 1
         print(f"Record test: {video} ({result.get('kind')}, "
               f"{result.get('frames')} frames, {video.stat().st_size} bytes)")

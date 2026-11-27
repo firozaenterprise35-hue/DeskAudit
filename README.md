@@ -259,7 +259,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -670,6 +670,8 @@ startup log line, so Task Manager can be checked against it.
   `DeskAudit.exe --record-test <seconds>` records a few seconds
   and prints the video path (test only).
 
+**Screen recording failure reporting (v12.14.1)** — Firoza's first /record ended with a reason-less 'too short' message: when every frame fails (a locked screen is the usual cause) the recorder waited out the whole duration before saying anything. It now stops after 3 failed frames in a row and tells her the reason at once ('screen copy failed' + unlock-the-screen hint), /record status shows the last error, and an encoder failure can no longer kill the worker thread silently — the owner always gets a message.
+
 **360° Telegram file explorer (v12.11)** — the owner asked: does
 the file explorer actually work properly? A full audit found 8 real
 problems, and finished the explorer in every direction:
@@ -884,7 +886,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.14.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.14.1.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -926,7 +928,7 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.14-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.14.1-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**

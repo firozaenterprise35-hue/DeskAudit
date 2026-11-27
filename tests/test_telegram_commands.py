@@ -622,6 +622,41 @@ def test_poll_skips_redelivered_update():
     print("poll skips re-delivered update passed")
 
 
+def test_recording_done_reports_reason():
+    """v12.14.1: when a recording fails, the message must say WHY —
+    a locked screen (every frame failing) used to arrive as a
+    reason-less 'too short', looking like a broken feature."""
+    from deskaudit.screen_record import ScreenRecorder
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db, _day = _seed_db(os.path.join(tmp, "t.db"))
+        bot, root = _make_bot(tmp, db)
+        net = _Net().install()
+        try:
+            def _fail_capture(path):
+                raise RuntimeError("screen copy failed")
+
+            rec = ScreenRecorder(root, on_done=bot._on_recording_done,
+                                 capture_fn=_fail_capture,
+                                 encode_fn=lambda f, d, s, fps: (Path(d) / "x.mp4", "mp4"))
+            bot._recorder = rec
+            # Pretend the recorder just failed on every frame.
+            rec._last_error = "screen copy failed"
+            bot._on_recording_done(None, None, 1, 0)
+            texts = [t for _, t in net.sent]
+            assert any("screen copy failed" in t for t in texts), texts
+            assert any("লক করা" in t for t in texts), texts
+            # And without an error the old message is unchanged.
+            net.sent.clear()
+            rec._last_error = None
+            bot._on_recording_done(None, None, 1, 0)
+            assert any("খুব ছোট" in t for _, t in net.sent), net.sent
+        finally:
+            net.uninstall()
+            db.close()
+    print("recording done reports reason passed")
+
+
 def test_confirm_token_binding():
     """v12.4 audit fix: a ✅ button must only confirm the action it
     was shown for. A stale button (wrong token, or the old bare

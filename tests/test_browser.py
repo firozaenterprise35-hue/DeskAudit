@@ -170,8 +170,15 @@ def test_track_searches_false():
     assert counts["searches"] == 0, counts
     searches = db.conn.execute("SELECT COUNT(*) c FROM browser_searches").fetchone()["c"]
     assert searches == 0, searches
+    # The extension reports the tab the user is viewing NOW — a later
+    # moment than the history row, so use when + 10 min. The same
+    # instant would collide with the history row on the
+    # UNIQUE(browser, url, visited_at) key (INSERT OR IGNORE drops
+    # it), and the same local instant in every zone: the history read
+    # localizes Chrome times and the receiver passes local time too.
     tracker.record_extension_tab("Chrome", "https://www.google.com/search?q=python+sqlite",
-                                 "python sqlite - Google Search", when)
+                                 "python sqlite - Google Search",
+                                 when + timedelta(minutes=10))
     searches = db.conn.execute("SELECT COUNT(*) c FROM browser_searches").fetchone()["c"]
     assert searches == 0, searches
     visits = db.conn.execute("SELECT COUNT(*) c FROM browser_visits").fetchone()["c"]

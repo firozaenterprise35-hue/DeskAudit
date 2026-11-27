@@ -43,6 +43,11 @@ MAX_FRAMES = 700
 FRAME_WIDTH = 960
 JPEG_QUALITY = 55
 MAX_FILE_MB = 48  # Telegram Bot API limit is 50 MB per file
+# Give up early when the screen cannot be captured at all (locked
+# screen, no display, GDI+ failure): 3 failed frames in a row means
+# the rest will fail too. Without this the owner waited the whole
+# duration and only then got a reason-less "too short" message.
+MAX_CONSECUTIVE_FAILURES = 3
 
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _TO_BN_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
@@ -401,6 +406,8 @@ class ScreenRecorder:
         self._minutes = 0
         self._duration_seconds = 0
         self._frames = 0
+        self._last_error: str | None = None
+        self._consecutive_failures = 0
         self._run_dir: Path | None = None
 
     # -- public API --------------------------------------------------
@@ -438,6 +445,8 @@ class ScreenRecorder:
             self._minutes = minutes
             self._duration_seconds = duration_seconds
             self._frames = 0
+            self._last_error = None
+            self._consecutive_failures = 0
             self._thread = threading.Thread(target=self._run,
                                             name="deskaudit-record",
                                             daemon=True)
@@ -454,12 +463,19 @@ class ScreenRecorder:
             return True, "🎥 রেকর্ড থামানো হলো — ভিডিও পাঠানো হচ্ছে…"
 
     def status(self) -> dict:
-        """Current state: running, minutes, elapsed, frames."""
+        """Current state: running, minutes, elapsed, frames, last error."""
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
             elapsed = (time.time() - self._started_at) if self._started_at else 0
             return {"running": running, "minutes": self._minutes,
-                    "elapsed_seconds": int(elapsed), "frames": self._frames}
+                    "elapsed_seconds": int(elapsed), "frames": self._frames,
+                    "last_error": self._last_error}
+
+    @property
+    def last_error(self) -> str | None:
+        """The last frame-capture error, or None when capturing works."""
+        with self._lock:
+            return self._last_error
 
     def minutes_left(self) -> int:
         st = self.status()
@@ -488,9 +504,22 @@ class ScreenRecorder:
                     frames.append(Path(frame))
                     with self._lock:
                         self._frames = len(frames)
+                        # Capturing works again — forget the earlier error.
+                        self._last_error = None
+                        self._consecutive_failures = 0
                 except Exception as exc:
+                    with self._lock:
+                        self._last_error = str(exc)
+                        self._consecutive_failures += 1
+                        failed = self._consecutive_failures
                     if self.log is not None:
                         self.log.warning("Screen record frame failed: %s", exc)
+                    if failed >= MAX_CONSECUTIVE_FAILURES:
+                        # The screen cannot be captured at all (locked
+                        # screen is the usual cause) — stop now and
+                        # report the reason instead of waiting out the
+                        # whole duration and then saying "too short".
+                        break
                 index += 1
                 # Sleep until the next frame is due (capture time counts).
                 due = (self._started_at or now) + index * interval
@@ -501,13 +530,25 @@ class ScreenRecorder:
                 self._finish(None, None, len(frames))
                 return
             fps = 1.0 / interval
-            result = self._encode(frames, run_dir,
-                                  "screen-record", fps)
+            try:
+                result = self._encode(frames, run_dir,
+                                      "screen-record", fps)
+            except Exception as exc:
+                # An encoder must never kill the thread silently: the
+                # owner would wait forever with no message at all.
+                if self.log is not None:
+                    self.log.warning("Screen record encode failed: %s", exc)
+                result = None
             if result is None:
                 self._finish(None, None, len(frames))
                 return
             video, kind = result
-            size_mb = video.stat().st_size / (1024 * 1024)
+            try:
+                size_mb = video.stat().st_size / (1024 * 1024)
+            except Exception:
+                # Encoder claimed success but left no file behind.
+                self._finish(None, None, len(frames))
+                return
             if size_mb > MAX_FILE_MB and self.log is not None:
                 self.log.warning("Recorded video is %.1f MB (over the "
                                  "%d MB Telegram limit).", size_mb, MAX_FILE_MB)

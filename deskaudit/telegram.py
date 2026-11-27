@@ -1611,12 +1611,23 @@ class TelegramBot:
         Sends the video to the owner's chat, then deletes it — like
         a screenshot, nothing is kept after sending."""
         if video is None:
+            # v12.14.1: say WHY it failed. The first version only said
+            # "too short", so a locked screen (every frame failing)
+            # looked like a broken feature with no clue what to try.
+            reason = ""
+            rec = self._recorder
+            err = rec.last_error if rec is not None else None
+            if err:
+                reason = f" কারণ: {err}।"
+                if "screen copy failed" in err:
+                    reason += (" স্ক্রিন লক করা থাকলে খুলে নিন, "
+                               "তারপর আবার চেষ্টা করুন।")
             if frames < 2:
-                self.send("🎥 রেকর্ড খুব ছোট হয়েছে — ভিডিও বানানো যায়নি। "
-                          "আরেকবার চেষ্টা করুন।")
+                self.send("🎥 রেকর্ড খুব ছোট হয়েছে — ভিডিও বানানো যায়নি।"
+                          + reason + " আরেকবার চেষ্টা করুন।")
             else:
                 self.send(f"🎥 রেকর্ড শেষ হয়েছে কিন্তু ভিডিও বানানো যায়নি — "
-                          f"{frames}টি ফ্রেম ধরা পড়েছিল।")
+                          f"{frames}টি ফ্রেম ধরা পড়েছিল।" + reason)
             return
         caption = f"🎥 স্ক্রিন রেকর্ড — {minutes} মিনিট ({frames} ফ্রেম)"
         try:
@@ -1678,10 +1689,14 @@ class TelegramBot:
             return
         elapsed = st["elapsed_seconds"]
         left = max(0, st["minutes"] * 60 - elapsed)
+        err_note = ""
+        if st.get("last_error"):
+            err_note = (f" ⚠️ শেষ চেষ্টায় স্ক্রিন ধরা যায়নি "
+                        f"({st['last_error']})।")
         self.send(f"🎥 রেকর্ড চলছে — {st['minutes']} মিনিটের মধ্যে "
                   f"{elapsed // 60} মিনিট {elapsed % 60:02d} সেকেন্ড হয়েছে, "
                   f"আরও {left // 60} মিনিট {left % 60:02d} সেকেন্ড বাকি "
-                  f"({st['frames']} ফ্রেম ধরা পড়েছে)। থামাতে /record stop লিখুন।")
+                  f"({st['frames']} ফ্রেম ধরা পড়েছে)।{err_note} থামাতে /record stop লিখুন।")
 
     def show_record_menu(self) -> None:
         """Duration picker for /record (like the /screen sub-menu)."""

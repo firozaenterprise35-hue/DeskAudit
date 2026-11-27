@@ -65,3 +65,10 @@ def test_notify_windows_text_no_crash_on_linux():
     # On Linux there is no toast — it must return False, never raise.
     assert notify_windows_text("শিরোনাম", "বার্তা") is False
     print("notify_windows_text linux no-crash passed")
+
+
+if __name__ == "__main__":
+    test_try_acquire_agent_lock_held()
+    test_run_agent_stops_when_lock_held()
+    test_notify_windows_text_no_crash_on_linux()
+    print("ALL SINGLE-INSTANCE TESTS PASSED")

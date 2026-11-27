@@ -182,3 +182,114 @@ def test_recorder_too_short_sends_nothing():
         assert done.wait(6)
         assert got["video"] is None and got["frames"] == 1
     print("recorder too short sends nothing passed")
+
+
+def test_recorder_fail_fast_reports_error():
+    # v12.14.1: when every frame fails (locked screen is the usual
+    # cause) the recorder must stop within seconds and say why —
+    # not wait out the whole duration and then say only "too short".
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        done = threading.Event()
+        got = {}
+
+        def always_fail(path):
+            raise RuntimeError("screen copy failed")
+
+        def on_done(video, kind, minutes, frames):
+            got.update(video=video, kind=kind, minutes=minutes, frames=frames)
+            done.set()
+
+        rec = ScreenRecorder(root, on_done=on_done,
+                             capture_fn=always_fail,
+                             encode_fn=lambda f, d, s, fps: (Path(d) / "x.mp4", "mp4"))
+        started = time.time()
+        ok, _msg = rec.start(1)
+        assert ok
+        assert done.wait(20), "failing recorder did not finish fast"
+        assert time.time() - started < 20, "recorder waited out the full minute"
+        assert got["video"] is None and got["frames"] == 0
+        assert rec.last_error == "screen copy failed"
+        assert rec.status()["running"] is False
+        assert rec.status()["last_error"] == "screen copy failed"
+    print("recorder fail fast reports error passed")
+
+
+def test_recorder_transient_failure_recovers():
+    # Two failed frames, then capturing works: the recording still
+    # completes, and the stale error is forgotten.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        done = threading.Event()
+        got = {}
+        calls = {"n": 0}
+
+        def flaky(path):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("screen copy failed")
+            Path(path).write_bytes(_fake_jpeg())
+            return Path(path)
+
+        def fake_encode(frames, out_dir, stem, fps):
+            video = Path(out_dir) / f"{stem}.mp4"
+            video.write_bytes(b"fake-video")
+            return video, "mp4"
+
+        def on_done(video, kind, minutes, frames):
+            got.update(video=video, kind=kind, minutes=minutes, frames=frames)
+            done.set()
+
+        rec = ScreenRecorder(root, on_done=on_done,
+                             capture_fn=flaky,
+                             encode_fn=fake_encode)
+        ok, _msg = rec.start(1)
+        assert ok
+        time.sleep(7.0)  # failures at ~0 s and ~2 s, good frames at ~4 s and ~6 s
+        ok, _msg = rec.stop()
+        assert ok
+        assert done.wait(6)
+        assert got["video"] is not None and got["frames"] >= 2
+        assert rec.last_error is None
+    print("recorder transient failure recovers passed")
+
+
+def test_recorder_encode_failure_still_reports():
+    # v12.14.1: an encoder that claims success but leaves no file
+    # (or raises) must not kill the worker thread silently — the
+    # owner still gets a message instead of waiting forever.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        done = threading.Event()
+        got = {}
+
+        def on_done(video, kind, minutes, frames):
+            got.update(video=video, kind=kind, minutes=minutes, frames=frames)
+            done.set()
+
+        rec = ScreenRecorder(root, on_done=on_done,
+                             capture_fn=_FakeCapture(),
+                             encode_fn=lambda f, d, s, fps: (Path(d) / "ghost.mp4", "mp4"))
+        ok, _msg = rec.start(1)
+        assert ok
+        time.sleep(5.0)  # frames at ~0 s, ~2 s, ~4 s
+        ok, _msg = rec.stop()
+        assert ok
+        assert done.wait(6), "encode failure left the recording hanging"
+        assert got["video"] is None and got["frames"] >= 2
+        assert rec.status()["running"] is False
+    print("recorder encode failure still reports passed")
+
+
+if __name__ == "__main__":
+    test_validate_minutes()
+    test_frame_interval_seconds()
+    test_write_mjpeg_avi_structure()
+    test_write_mjpeg_avi_needs_two_frames()
+    test_encode_mp4_with_ffmpeg()
+    test_recorder_start_stop_sends_video()
+    test_recorder_too_short_sends_nothing()
+    test_recorder_fail_fast_reports_error()
+    test_recorder_transient_failure_recovers()
+    test_recorder_encode_failure_still_reports()
+    print("ALL SCREEN RECORD TESTS PASSED")
