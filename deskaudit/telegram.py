@@ -60,6 +60,11 @@ DEFAULT_TELEGRAM = {
     "enabled": False,
     "bot_token": "",
     "chat_id": "",
+    # Second chat (a manager): sees alerts, digests, recordings and
+    # the live view, and may run view-only commands — but can never
+    # control the PC (no shutdown/close/freeze/delete decisions).
+    # Empty means no manager. Set from /manager or Settings.
+    "manager_chat_id": "",
     "poll_seconds": 30,
     "digest_minutes": 60,
     "notify_critical": True,
@@ -200,7 +205,7 @@ def edit_photo(token: str, chat_id: str, message_id: int, path: str | Path,
                caption: str = "", reply_markup: dict | None = None) -> bool:
     """Replace the photo of a message the bot sent earlier
     (editMessageMedia) — the live view refreshes one message in
-    place instead of sending a new photo every 10 seconds. The
+    place instead of sending a new photo every 2 seconds. The
     caption and the stop button travel with the new photo. The
     media field is a JSON string pointing at the attached file
     (attach://photo). Never raises."""
@@ -983,7 +988,7 @@ HELP_TEXT = (
     "  /status /today /week /apps /projects /transfers /alerts /files\n"
     "  🌐 /browser — কোন সাইটে কী চলছে | /browser close | /browser block <ডোমেইন> | /browser unblock <ডোমেইন>\n"
     "  📸 /screenshot — এখনকার স্ক্রিনের ছবি পাঠানো\n"
-    "  🔴 /live — লাইভ স্ক্রিন দেখা (এক মেসেজে ১০ সেকেন্ডে তাজা ছবি, ১০ মিনিট পর্যন্ত) | /live stop — থামানো\n"
+    "  🔴 /live — লাইভ স্ক্রিন দেখা (এক মেসেজে ২ সেকেন্ডে তাজা ছবি, ১০ মিনিট পর্যন্ত) | /live stop — থামানো\n"
     "  🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
     "  📄 /report — আজকের রিপোর্ট ফাইল হিসেবে পাঠানো\n"
     "  📂 /explore [ফোল্ডার] — ড্রাইভ/ফোল্ডার ঘুরে দেখা: ফাইল ও ফোল্ডার\n"
@@ -1000,12 +1005,55 @@ HELP_TEXT = (
     "  🔕 /mute [মিনিট] — অ্যালার্ট+ডাইজেস্ট চুপ (সময় না দিলে চিরদিনের জন্য) | /unmute — আবার চালু\n"
     "  🕐 /digest <মিনিট|off> — ডাইজেস্টের সময় বদলানো\n"
     "  🎯 /goal <প্রজেক্ট> <মিনিট> — দৈনিক লক্ষ্য বদলানো\n"
+    "  👥 /manager — দ্বিতীয় চ্যাট (ম্যানেজার) দেখার অনুমতি দেওয়া/তোলা\n"
     "💾 ডেটা ও PC:\n"
     "  💾 /backup — এখনই ব্যাকআপ নেওয়া\n"
+    "  ☁️ /drive — রেকর্ডিং Drive-এ আপলোডের অবস্থা | /drive auth — Drive যুক্ত করা | /drive on|off — চালু/বন্ধ\n"
     "  🗑 /clear [তারিখ] — এক দিনের ডেটা মোছা (নিশ্চিতকরণ লাগবে)\n"
     "  ⏻ /shutdown | /restart — PC বন্ধ/রিস্টার্ট (নিশ্চিতকরণ লাগবে) | /abort — বাতিল\n"
     "  ♻️ /reset — সব ডেটা মুছে নতুন শুরু, আগে ব্যাকআপ নেবে\n"
     "শুধু আপনার চ্যাট থেকেই কমান্ড চলে।"
+)
+
+
+# -- manager (second chat, v12.16) ---------------------------------------
+# The manager sees things; the manager never controls the PC. These
+# sets are the whole rule — anything not listed here is refused for
+# the manager's chat, in handle_text and handle_callback.
+MANAGER_TEXT_COMMANDS = {
+    "/start", "/help", "/menu", "/status", "/today", "/week", "/apps",
+    "/projects", "/transfers", "/alerts", "/files", "/search", "/report",
+    "/browser", "/screenshot", "/shot", "/live", "/deleted", "/explore",
+    "/hidden",
+}
+MANAGER_MENU = {
+    "status", "today", "week", "apps", "projects", "transfers",
+    "alerts", "files", "search", "report", "browser", "shot", "live",
+    "live_stop", "deleted", "explore", "hidden", "menu", "help", "noop",
+}
+# Explorer taps the manager may make (browse only — nothing that
+# copies, moves, hides, renames, deletes, sends, or restores a file).
+MANAGER_EXPLORER_KINDS = {
+    "drv", "o", "f", "fsel", "pg", "up", "root", "back", "search", "hp",
+}
+MANAGER_REFUSAL = ("👀 ম্যানেজার চ্যাট থেকে শুধু দেখা যায় — অ্যালার্ট, "
+                   "ডাইজেস্ট, স্ক্রিনশট, লাইভ দেখা আর রিপোর্ট পাবেন। "
+                   "PC নিয়ন্ত্রণ (বন্ধ/লক/মোছা/রেকর্ড) শুধু মালিকের "
+                   "চ্যাট থেকে চলে।")
+
+MANAGER_HELP_TEXT = (
+    "👋 DeskAudit — আপনি ম্যানেজারের চ্যাটে আছেন। আপনি শুধু দেখতে "
+    "পারবেন, PC নিয়ন্ত্রণ করতে পারবেন না।\n"
+    "📊 দেখা:\n"
+    "  /status /today /week /apps /projects /transfers /alerts /files\n"
+    "  🌐 /browser — কোন সাইটে কী চলছে\n"
+    "  📸 /screenshot — এখনকার স্ক্রিনের ছবি\n"
+    "  🔴 /live — লাইভ স্ক্রিন দেখা | /live stop — থামানো\n"
+    "  🔎 /search <শব্দ> — আজ ফাইল/উইন্ডো/সার্চে খোঁজা\n"
+    "  📄 /report — আজকের রিপোর্ট\n"
+    "  📂 /explore — ড্রাইভ/ফোল্ডার ঘুরে দেখা (শুধু দেখা)\n"
+    "  🫥 /hidden — লুকানো ফাইল | 🗑 /deleted — ডিলিট হওয়া ফাইল\n"
+    "অ্যালার্ট, ডাইজেস্ট আর রেকর্ডিং শেষ হলে ভিডিও — সব এখানেও আসবে।"
 )
 
 
@@ -1044,6 +1092,26 @@ def menu_keyboard() -> dict:
         [btn("💾 ব্যাকআপ", "m:backup"), btn("🗑 এক দিন মোছা", "m:clear")],
         [btn("⏻ PC বন্ধ", "m:shutdown"), btn("🔄 রিস্টার্ট", "m:restart")],
         [btn("🛑 বন্ধ বাতিল", "m:abort"), btn("♻️ সব রিসেট", "m:reset")],
+        [btn("👥 ম্যানেজার", "m:manager"), btn("☁️ Drive আপলোড", "m:drive")],
+    ]}
+
+
+def manager_menu_keyboard() -> dict:
+    """The manager's /menu — view-only buttons (v12.16). Control
+    buttons are not shown at all, so there is nothing to refuse."""
+    def btn(text, data):
+        return {"text": text, "callback_data": data}
+
+    return {"inline_keyboard": [
+        [btn("📊 বর্তমান অবস্থা", "m:status"), btn("📅 আজকের সারাংশ", "m:today")],
+        [btn("📅 সপ্তাহ", "m:week"), btn("🖥️ অ্যাপ", "m:apps")],
+        [btn("🎯 প্রজেক্ট", "m:projects"), btn("🔒 ট্রান্সফার", "m:transfers")],
+        [btn("📁 ফাইল", "m:files"), btn("⚠️ অ্যালার্ট", "m:alerts")],
+        [btn("🔎 খোঁজা", "m:search"), btn("📄 রিপোর্ট", "m:report")],
+        [btn("🌐 ব্রাউজার", "m:browser"), btn("📸 স্ক্রিনশট", "m:shot")],
+        [btn("🔴 লাইভ দেখা", "m:live")],
+        [btn("📂 ফাইল ঘোরাঘুরি", "m:explore"), btn("🫥 লুকানো ফাইল", "m:hidden")],
+        [btn("🗑️ মুছে যাওয়া ফাইল", "m:deleted"), btn("❓ সাহায্য", "m:help")],
     ]}
 
 
@@ -1209,7 +1277,7 @@ class TelegramBot:
     def __init__(self, db, settings: dict | None, log=None,
                  project_root=None, config_path=None, projects_path=None,
                  tagger=None, reports_dir=None, delete_protector=None,
-                 file_explorer=None):
+                 file_explorer=None, drive_settings: dict | None = None):
         self.db = db
         self.settings = {**DEFAULT_TELEGRAM, **(settings or {})}
         self.log = log or _log
@@ -1219,8 +1287,19 @@ class TelegramBot:
         self.tagger = tagger
         self.delete_protector = delete_protector
         self.file_explorer = file_explorer
+        self.drive_settings = dict(drive_settings or {})
+        self._drive_uploader = None  # created lazily (v12.16)
         self._recorder = None  # created lazily: ScreenRecorder (v12.14)
         self._live_viewer = None  # created lazily: LiveViewer (v12.15)
+        # The chat asking right now (poll sets it per update, then
+        # clears it): replies go to the asker, owner or manager.
+        # Proactive messages never use it — they broadcast instead.
+        self._reply_chat_id: str | None = None
+        # True while the current update comes from the manager chat.
+        self._from_manager = False
+        # The chat a running live view belongs to (captured at start —
+        # the reply chat may change while the view runs).
+        self._live_chat_id: str | None = None
         self.reports_dir = (Path(reports_dir) if reports_dir else
                             (self.project_root / "reports"
                              if self.project_root else Path("reports")))
@@ -1245,10 +1324,94 @@ class TelegramBot:
     def chat_id(self) -> str:
         return str(self.settings.get("chat_id") or "")
 
+    @property
+    def manager_chat_id(self) -> str:
+        return str(self.settings.get("manager_chat_id") or "")
+
+    def _target_chat(self) -> str:
+        """The chat a reply goes to: the asker of the current update
+        (owner or manager), or the owner when nothing is being
+        answered. Proactive messages do not use this — they broadcast."""
+        return self._reply_chat_id or self.chat_id
+
+    def _chats(self) -> list[str]:
+        """Owner + manager (deduped) — the broadcast list."""
+        chats = [self.chat_id]
+        if self.manager_chat_id and self.manager_chat_id != self.chat_id:
+            chats.append(self.manager_chat_id)
+        return [c for c in chats if c]
+
+    def broadcast(self, text: str) -> bool:
+        """A proactive message to the owner AND the manager (alerts,
+        digests, recording results). True when at least one chat got
+        it. Never raises; a failed send to one chat never blocks the
+        other."""
+        if not self.configured or not text:
+            return False
+        ok_any = False
+        for chat in self._chats():
+            try:
+                if send_message(self.token, chat, text):
+                    ok_any = True
+                else:
+                    self.log.warning("Telegram broadcast failed for chat %s.",
+                                     chat[-4:] if len(chat) > 4 else "****")
+            except Exception as exc:
+                self.log.warning("Telegram broadcast failed: %s", exc)
+        return ok_any
+
+    def broadcast_long(self, text: str) -> bool:
+        """Like broadcast, but for long reports (split per chat)."""
+        if not self.configured or not text:
+            return False
+        ok_any = False
+        for chat in self._chats():
+            try:
+                if send_long(self.token, chat, text):
+                    ok_any = True
+                else:
+                    self.log.warning("Telegram broadcast failed for chat %s.",
+                                     chat[-4:] if len(chat) > 4 else "****")
+            except Exception as exc:
+                self.log.warning("Telegram broadcast failed: %s", exc)
+        return ok_any
+
+    def broadcast_video(self, path: str | Path, caption: str = "") -> bool:
+        """Send a video to the owner and the manager. True when at
+        least one chat got it (the video is preserved then)."""
+        if not self.configured:
+            return False
+        ok_any = False
+        for chat in self._chats():
+            try:
+                if send_video(self.token, chat, path, caption):
+                    ok_any = True
+            except Exception as exc:
+                self.log.warning("Telegram sendVideo failed: %s", exc)
+        if not ok_any:
+            self.log.warning("Telegram sendVideo failed (check bot token / chat id).")
+        return ok_any
+
+    def broadcast_file(self, path: str | Path, caption: str = "") -> bool:
+        """Send a document to the owner and the manager. True when at
+        least one chat got it."""
+        if not self.configured:
+            return False
+        ok_any = False
+        for chat in self._chats():
+            try:
+                if send_document(self.token, chat, path, caption):
+                    ok_any = True
+            except Exception as exc:
+                self.log.warning("Telegram sendDocument failed: %s", exc)
+        if not ok_any:
+            self.log.warning("Telegram sendDocument failed (check bot token / chat id).")
+        return ok_any
+
     def send(self, text: str) -> bool:
         if not self.configured:
             return False
-        ok = send_message(self.token, self.chat_id, text)
+        ok = send_message(self.token, self._target_chat(), text)
         if not ok:
             self.log.warning("Telegram send failed (check bot token / chat id).")
         return ok
@@ -1257,16 +1420,16 @@ class TelegramBot:
         """Send a long report split into several messages if needed."""
         if not self.configured:
             return False
-        ok = send_long(self.token, self.chat_id, text)
+        ok = send_long(self.token, self._target_chat(), text)
         if not ok:
             self.log.warning("Telegram send failed (check bot token / chat id).")
         return ok
 
     def send_video(self, path: str | Path, caption: str = "") -> bool:
-        """Send a local video file to the owner's chat. Never raises."""
+        """Send a local video file to the asking chat. Never raises."""
         if not self.configured:
             return False
-        ok = send_video(self.token, self.chat_id, path, caption)
+        ok = send_video(self.token, self._target_chat(), path, caption)
         if not ok:
             self.log.warning("Telegram sendVideo failed (check bot token / chat id).")
         return ok
@@ -1275,7 +1438,7 @@ class TelegramBot:
         """Send a local file as a Telegram document. Never raises."""
         if not self.configured:
             return False
-        ok = send_document(self.token, self.chat_id, path, caption)
+        ok = send_document(self.token, self._target_chat(), path, caption)
         if not ok:
             self.log.warning("Telegram sendDocument failed (check bot token / chat id).")
         return ok
@@ -1286,7 +1449,7 @@ class TelegramBot:
         edits that one message). Never raises."""
         if not self.configured:
             return None
-        message_id = send_photo_id(self.token, self.chat_id, path,
+        message_id = send_photo_id(self.token, self._target_chat(), path,
                                    caption, reply_markup)
         if message_id is None:
             self.log.warning("Telegram sendPhoto failed (check bot token / chat id).")
@@ -1298,7 +1461,7 @@ class TelegramBot:
         (the live view's refresh). Never raises."""
         if not self.configured:
             return False
-        ok = edit_photo(self.token, self.chat_id, message_id, path,
+        ok = edit_photo(self.token, self._target_chat(), message_id, path,
                         caption, reply_markup)
         if not ok:
             self.log.warning("Telegram editMessageMedia failed (check bot token / chat id).")
@@ -1309,7 +1472,7 @@ class TelegramBot:
         if not self.configured:
             return False
         result = _post(self.token, "sendMessage", {
-            "chat_id": self.chat_id, "text": text[:4000],
+            "chat_id": self._target_chat(), "text": text[:4000],
             "disable_web_page_preview": True,
             "reply_markup": reply_markup,
         })
@@ -1322,7 +1485,7 @@ class TelegramBot:
         if not self.configured:
             return None
         result = _post(self.token, "sendMessage", {
-            "chat_id": self.chat_id, "text": text[:4000],
+            "chat_id": self._target_chat(), "text": text[:4000],
             "disable_web_page_preview": True,
             "reply_markup": reply_markup,
         })
@@ -1340,7 +1503,7 @@ class TelegramBot:
         if not self.configured or not message_id:
             return False
         result = _post(self.token, "editMessageText", {
-            "chat_id": self.chat_id, "message_id": message_id,
+            "chat_id": self._target_chat(), "message_id": message_id,
             "text": text[:4000], "disable_web_page_preview": True,
             "reply_markup": reply_markup,
         })
@@ -1680,7 +1843,7 @@ class TelegramBot:
         except Exception as exc:
             self.send(f"📄 রিপোর্ট বানানো যায়নি: {exc}")
             return
-        if send_document(self.token, self.chat_id, path,
+        if send_document(self.token, self._target_chat(), path,
                          caption=f"DeskAudit — {day} দিনের রিপোর্ট"):
             self.send(f"📄 {day} দিনের রিপোর্ট পাঠিয়ে দেওয়া হয়েছে।")
         else:
@@ -1702,8 +1865,10 @@ class TelegramBot:
 
     def _on_recording_done(self, video, kind, minutes: int, frames: int) -> None:
         """Called (in the recorder thread) when a recording finishes.
-        Sends the video to the owner's chat, then deletes it — like
-        a screenshot, nothing is kept after sending."""
+        Sends the video to the owner's chat AND the manager's chat,
+        then uploads it to Drive when connected — and only then
+        deletes the local file. Like a screenshot, nothing is kept
+        after sending."""
         if video is None:
             # v12.14.1: say WHY it failed. The first version only said
             # "too short", so a locked screen (every frame failing)
@@ -1717,29 +1882,47 @@ class TelegramBot:
                     reason += (" স্ক্রিন লক করা থাকলে খুলে নিন, "
                                "তারপর আবার চেষ্টা করুন।")
             if frames < 2:
-                self.send("🎥 রেকর্ড খুব ছোট হয়েছে — ভিডিও বানানো যায়নি।"
-                          + reason + " আরেকবার চেষ্টা করুন।")
+                self.broadcast("🎥 রেকর্ড খুব ছোট হয়েছে — ভিডিও বানানো যায়নি।"
+                               + reason + " আরেকবার চেষ্টা করুন।")
             else:
-                self.send(f"🎥 রেকর্ড শেষ হয়েছে কিন্তু ভিডিও বানানো যায়নি — "
-                          f"{frames}টি ফ্রেম ধরা পড়েছিল।" + reason)
+                self.broadcast(f"🎥 রেকর্ড শেষ হয়েছে কিন্তু ভিডিও বানানো যায়নি — "
+                               f"{frames}টি ফ্রেম ধরা পড়েছিল।" + reason)
             return
         caption = f"🎥 স্ক্রিন রেকর্ড — {minutes} মিনিট ({frames} ফ্রেম)"
+        telegram_ok = False
         try:
             if kind == "mp4":
-                ok = self.send_video(video, caption)
+                telegram_ok = self.broadcast_video(video, caption)
             else:
-                ok = self.send_file(video, caption)
-            if ok:
-                self.send("🎥 রেকর্ড পাঠিয়ে দেওয়া হয়েছে।")
+                telegram_ok = self.broadcast_file(video, caption)
+            if telegram_ok:
+                self.broadcast("🎥 রেকর্ড পাঠিয়ে দেওয়া হয়েছে।")
             else:
-                self.send("🎥 ভিডিও পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
+                self.broadcast("🎥 ভিডিও পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
         finally:
-            try:
-                parent = Path(video).parent
-                Path(video).unlink(missing_ok=True)
-                parent.rmdir()  # the run dir is empty now
-            except Exception:
-                pass
+            # v12.16: Drive auto-upload. The video goes to Drive when
+            # connected, and the owner gets the link.
+            drive_ok, drive_link = False, None
+            uploader = self.drive_uploader
+            if uploader is not None and uploader.enabled:
+                drive_ok, drive_link = uploader.upload(video)
+                if drive_ok:
+                    self.broadcast(f"☁️ Drive-এ রাখা হয়েছে: {drive_link}")
+                else:
+                    self.broadcast(f"☁️ Drive-এ আপলোড হয়নি — {drive_link}।")
+            if telegram_ok or drive_ok:
+                try:
+                    parent = Path(video).parent
+                    Path(video).unlink(missing_ok=True)
+                    parent.rmdir()  # the run dir is empty now
+                except Exception:
+                    pass
+            else:
+                # Both sends failed — keep the file, or the recording
+                # would be lost entirely. The old code deleted it here
+                # no matter what.
+                self.broadcast(f"⚠️ ভিডিও কোথাও পাঠানো যায়নি — ফাইলটি PC-তে "
+                               f"আছে: {video}।")
 
     def start_recording(self, minutes) -> None:
         """Start a screen recording for `minutes` minutes."""
@@ -1832,7 +2015,7 @@ class TelegramBot:
             self.send(f"📸 স্ক্রিনশট নেওয়া যায়নি: {exc}")
             return
         try:
-            if send_photo(self.token, self.chat_id, path,
+            if send_photo(self.token, self._target_chat(), path,
                           caption=f"DeskAudit — স্ক্রিনশট {stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}"):
                 self.send("📸 স্ক্রিনশট পাঠিয়ে দেওয়া হয়েছে।")
             else:
@@ -1844,6 +2027,251 @@ class TelegramBot:
                 pass
 
     # -- live screen view (v12.15) ----------------------------------
+    # -- Drive auto-upload (v12.16) -------------------------------------
+    @property
+    def drive_uploader(self):
+        """The Drive uploader, created on first use. None when no
+        drive settings were passed in (bot built without them)."""
+        if self._drive_uploader is None and self.drive_settings:
+            from .drive_upload import DriveUploader
+
+            self._drive_uploader = DriveUploader(self.drive_settings,
+                                                 log=self.log)
+        return self._drive_uploader
+
+    def _save_drive_setting(self, key: str, value) -> bool:
+        """Persist one drive setting to config.local.yaml (same
+        pattern as set_digest) and keep the uploader in sync."""
+        self.drive_settings[key] = value
+        if self._drive_uploader is not None:
+            self._drive_uploader.settings[key] = value
+        if self.config_path is None:
+            return True
+        try:
+            from .dashboard import save_settings
+
+            save_settings(self.config_path, {"drive": {key: value}})
+            return True
+        except Exception as exc:
+            self.log.warning("Drive setting %s did not save: %s", key, exc)
+            return False
+
+    def drive_status(self) -> None:
+        """The /drive status text (owner only)."""
+        uploader = self.drive_uploader
+        if uploader is None or not self.drive_settings.get("client_id") \
+                or not self.drive_settings.get("client_secret"):
+            self.send("☁️ Drive আপলোড এখনো সেট করা হয়নি।\n\n"
+                      "একবারের সেটআপ:\n"
+                      "১) Google Cloud Console-এ নতুন প্রজেক্ট বানান, Drive API চালু করুন।\n"
+                      "২) OAuth consent screen → Desktop app ক্রেডেনশিয়াল বানান — Client ID + Secret পাবেন।\n"
+                      "৩) ড্যাশবোর্ড Settings → Google Drive আপলোড-এ ID আর Secret লিখুন (আমাকে পাঠালেও আমি বসিয়ে দেব)।\n"
+                      "৪) তারপর /drive auth লিখুন — সাইন-ইনের লিংক আসবে।")
+            return
+        if not uploader.configured:
+            self.send("☁️ Drive-এ Client ID/Secret আছে, কিন্তু সাইন-ইন হয়নি।\n"
+                      "/drive auth লিখুন — লিংক আসবে, সাইন-ইন করে কোডটি পাঠান।")
+            return
+        state = "চালু ✅" if uploader.enabled else "বন্ধ ⏸️"
+        folder = self.drive_settings.get("folder_name") or "DeskAudit Recordings"
+        self.send(f"☁️ Drive আপলোড: {state}\n"
+                  f"ফোল্ডার: {folder}\n"
+                  "রেকর্ডিং শেষ হলে ভিডিও এখানে যাবে — PC মুছে গেলেও থাকবে।\n"
+                  "বন্ধ করতে /drive off, চালু করতে /drive on, পরীক্ষা করতে /drive test।")
+
+    def drive_auth(self) -> None:
+        """Send the sign-in link (owner only)."""
+        uploader = self.drive_uploader
+        url = uploader.auth_url() if uploader is not None else None
+        if not url:
+            self.send("☁️ Drive-এ Client ID নেই — আগে ড্যাশবোর্ড Settings → "
+                      "Google Drive আপলোড-এ Client ID + Secret লিখুন, "
+                      "তারপর /drive auth লিখুন।")
+            return
+        self.send("☁️ Drive যুক্ত করতে এই লিংকে যান (ফোনের ব্রাউজারে খুলুন):\n"
+                  f"{url}\n\n"
+                  "Google-এ সাইন-ইন করুন, অনুমতি দিন। পেজটি খুলবে না — "
+                  "তাতে সমস্যা নেই, ব্রাউজারের ঠিকানার লাইনে ?code=... "
+                  "আকারে একটা কোড থাকবে। সেটা কপি করে এখানে পাঠান:\n"
+                  "/drive code <কোড>")
+
+    def drive_set_code(self, code: str) -> None:
+        """Exchange the pasted auth code for a refresh token (owner
+        only) and store it — from then on uploads are automatic."""
+        uploader = self.drive_uploader
+        if uploader is None or not self.drive_settings.get("client_id") \
+                or not self.drive_settings.get("client_secret"):
+            self.send("☁️ Drive-এ Client ID/Secret নেই — আগে ড্যাশবোর্ড Settings-এ "
+                      "লিখুন, তারপর /drive auth দিয়ে নতুন কোড নিন।")
+            return
+        try:
+            from .drive_upload import exchange_code
+
+            result = exchange_code(self.drive_settings["client_id"],
+                                   self.drive_settings["client_secret"],
+                                   code)
+        except Exception as exc:
+            self.send(f"☁️ কোডটি কাজ করেনি — {exc}")
+            return
+        token = result.get("refresh_token") or ""
+        if not self._save_drive_setting("refresh_token", token):
+            self.send("☁️ Drive যুক্ত হয়েছে এই চালু অবস্থায়, কিন্তু সেভ হয়নি — "
+                      "রিস্টার্টে আবার /drive code করতে হবে।")
+            return
+        self.send("✅ Drive যুক্ত হয়েছে — এখন থেকে রেকর্ডিং শেষ হলে ভিডিও "
+                  "Drive-এ আপলোড হবে, আর লিংক এখানে আসবে।")
+
+    def drive_toggle(self, on: bool) -> None:
+        """Switch auto-upload on/off (owner only)."""
+        uploader = self.drive_uploader
+        if uploader is None or not uploader.configured:
+            self.send("☁️ Drive এখনো যুক্ত হয়নি — আগে /drive auth করে যুক্ত করুন।")
+            return
+        if not self._save_drive_setting("enabled", bool(on)):
+            self.send("☁️ Drive-এর সেটিং এই চালু অবস্থায় বদলেছে, কিন্তু সেভ হয়নি — "
+                      "রিস্টার্টে আগেরটায় ফিরবে।")
+            return
+        self.send("☁️ Drive আপলোড চালু করা হয়েছে — পরের রেকর্ডিং Drive-এ যাবে।"
+                  if on else
+                  "☁️ Drive আপলোড বন্ধ করা হয়েছে — রেকর্ডিং শুধু Telegram-এ আসবে।")
+
+    def drive_test(self) -> None:
+        """Upload a tiny test file to prove the connection (owner only)."""
+        uploader = self.drive_uploader
+        if uploader is None or not uploader.enabled:
+            self.send("☁️ Drive এখনো যুক্ত হয়নি বা চালু নেই — /drive লিখে অবস্থা দেখুন।")
+            return
+        import tempfile
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                    "w", suffix=".txt", prefix="DeskAudit-drive-test-",
+                    delete=False, encoding="utf-8") as f:
+                f.write("DeskAudit Drive test — এই ফাইলটি সংযোগ পরীক্ষার জন্য।\n")
+                tmp = f.name
+            ok, link = uploader.upload(tmp)
+        finally:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+        if ok:
+            self.send(f"✅ Drive পরীক্ষা সফল — ফাইল আপলোড হয়েছে: {link}")
+        else:
+            self.send(f"☁️ Drive পরীক্ষা ব্যর্থ — {link}")
+
+    # -- manager (second chat, v12.16) -----------------------------------
+    def _unknown_chats(self) -> list[dict]:
+        """Chats that messaged the bot but are neither owner nor
+        manager (candidates for /manager). Stored in db state."""
+        try:
+            raw = self.db.get_state("telegram_unknown_chats") or ""
+            chats = json.loads(raw) if raw else []
+            return [c for c in chats if isinstance(c, dict)]
+        except Exception:
+            return []
+
+    def _record_unknown_chat(self, sender: dict) -> None:
+        """Remember a chat that is not the owner/manager, so /manager
+        can offer it. Never replies to strangers."""
+        try:
+            chat_id = str((sender or {}).get("id", ""))
+            if not chat_id or chat_id in (self.chat_id,
+                                          self.manager_chat_id):
+                return
+            chats = self._unknown_chats()
+            name = str((sender or {}).get("first_name", "") or "")
+            last = str((sender or {}).get("last_name", "") or "")
+            username = str((sender or {}).get("username", "") or "")
+            label = (name + " " + last).strip() or ("@" + username if username
+                                                    else chat_id)
+            chats = [c for c in chats if str(c.get("chat_id")) != chat_id]
+            chats.insert(0, {"chat_id": chat_id, "label": label})
+            self.db.set_state("telegram_unknown_chats",
+                              json.dumps(chats[:10], ensure_ascii=False))
+        except Exception:
+            pass
+
+    def show_manager(self) -> None:
+        """The /manager status (owner only): who the manager is, and
+        which unknown chats could become the manager."""
+        rows = []
+        if self.manager_chat_id:
+            rows.append(f"👥 ম্যানেজার: {self.manager_chat_id} (শুধু দেখবে)")
+        else:
+            rows.append("👥 কোনো ম্যানেজার নেই — শুধু আপনিই দেখছেন।")
+        unknown = self._unknown_chats()
+        keyboard = None
+        if unknown:
+            rows.append("\nবটকে মেসেজ পাঠিয়েছে এমন অচেনা চ্যাট:")
+            btns = []
+            for c in unknown:
+                label = str(c.get("label", c.get("chat_id")))
+                rows.append(f"  • {label} ({c.get('chat_id')})")
+                btns.append([{"text": f"✅ {label} কে ম্যানেজার করুন",
+                              "callback_data": f"m:manager_add:{c.get('chat_id')}"}])
+            keyboard = {"inline_keyboard": btns}
+        rows.append("\nম্যানেজারকে সরাতে /manager remove লিখুন।")
+        if keyboard:
+            self.send_markup("\n".join(rows), keyboard)
+        else:
+            self.send("\n".join(rows))
+
+    def manager_add(self, chat_id: str) -> None:
+        """Approve a chat as the manager (owner only)."""
+        chat_id = (chat_id or "").strip()
+        if not chat_id:
+            self.send("👥 চ্যাট id পাওয়া যায়নি — /manager লিখে আবার দেখুন।")
+            return
+        self.settings["manager_chat_id"] = chat_id
+        saved = True
+        if self.config_path is not None:
+            try:
+                from .dashboard import save_settings
+
+                save_settings(self.config_path,
+                              {"telegram": {"manager_chat_id": chat_id}})
+            except Exception as exc:
+                saved = False
+                self.log.warning("Manager chat id did not save: %s", exc)
+        if saved:
+            self.send(f"✅ ম্যানেজার যুক্ত হয়েছে (chat {chat_id}) — অ্যালার্ট, "
+                      "ডাইজেস্ট, রেকর্ডিং আর লাইভ দেখা এখন তার কাছেও যাবে। "
+                      "PC নিয়ন্ত্রণ শুধু আপনার কাছেই থাকবে।")
+        else:
+            self.send("✅ ম্যানেজার এই চালু অবস্থায় যুক্ত হয়েছে, কিন্তু সেভ হয়নি — "
+                      "রিস্টার্টে আগেরটায় ফিরবে।")
+        try:
+            send_message(self.token, chat_id,
+                         "👋 DeskAudit-এ আপনাকে ম্যানেজার হিসেবে যুক্ত করা হয়েছে। "
+                         "আপনি শুধু দেখতে পারবেন — অ্যালার্ট, ডাইজেস্ট, স্ক্রিনশট, "
+                         "লাইভ দেখা আর রিপোর্ট। PC নিয়ন্ত্রণ শুধু মালিকের চ্যাট থেকে চলে।\n"
+                         "কী কী দেখতে পারবেন, তা জানতে /help লিখুন।")
+        except Exception as exc:
+            self.log.warning("Manager welcome failed: %s", exc)
+
+    def manager_remove(self) -> None:
+        """Revoke the manager (owner only)."""
+        old = self.manager_chat_id
+        self.settings["manager_chat_id"] = ""
+        if self.config_path is not None:
+            try:
+                from .dashboard import save_settings
+
+                save_settings(self.config_path,
+                              {"telegram": {"manager_chat_id": ""}})
+            except Exception as exc:
+                self.log.warning("Manager chat id did not clear: %s", exc)
+        if old:
+            try:
+                send_message(self.token, old,
+                             "👋 DeskAudit-এ আপনার ম্যানেজার দেখা বন্ধ করা হয়েছে।")
+            except Exception as exc:
+                self.log.warning("Manager farewell failed: %s", exc)
+            self.send("👥 ম্যানেজার সরিয়ে দেওয়া হয়েছে — এখন শুধু আপনিই দেখছেন।")
+        else:
+            self.send("👥 কোনো ম্যানেজার ছিল না।")
+
     @property
     def live_viewer(self):
         """The bot's LiveViewer, created on first use. None when the
@@ -1861,22 +2289,40 @@ class TelegramBot:
         return self._live_viewer
 
     def _live_send(self, path, caption, reply_markup) -> int | None:
-        return self.send_photo_id(path, caption, reply_markup)
+        # The live view belongs to the chat that started it — captured
+        # in _live_chat_id, because the reply chat may change while
+        # the view runs (the other chat asks something).
+        chat = self._live_chat_id or self.chat_id
+        if not self.configured:
+            return None
+        message_id = send_photo_id(self.token, chat, path,
+                                   caption, reply_markup)
+        if message_id is None:
+            self.log.warning("Telegram sendPhoto failed (check bot token / chat id).")
+        return message_id
 
     def _live_edit(self, message_id, path, caption, reply_markup) -> bool:
-        return self.edit_photo(message_id, path, caption, reply_markup)
+        chat = self._live_chat_id or self.chat_id
+        if not self.configured:
+            return False
+        ok = edit_photo(self.token, chat, message_id, path,
+                        caption, reply_markup)
+        if not ok:
+            self.log.warning("Telegram editMessageMedia failed (check bot token / chat id).")
+        return ok
 
     def _on_live_done(self, reason: str, refreshes: int, last_error) -> None:
-        """Called (in the viewer thread) when a live view ends."""
+        """Called (in the viewer thread) when a live view ends.
+        Both chats are told — the manager may have started the view."""
         if reason == "stopped":
-            self.send(f"⏹️ লাইভ দেখা থামানো হয়েছে — ছবি {refreshes} বার তাজা হয়েছে।")
+            self.broadcast(f"⏹️ লাইভ দেখা থামানো হয়েছে — ছবি {refreshes} বার তাজা হয়েছে।")
         elif reason == "time_up":
-            self.send("🔴 লাইভ দেখা শেষ হয়েছে (১০ মিনিট) — আবার দেখতে /live লিখুন।")
+            self.broadcast("🔴 লাইভ দেখা শেষ হয়েছে (১০ মিনিট) — আবার দেখতে /live লিখুন।")
         elif reason == "send_failed":
-            self.send("🔴 লাইভ ছবি পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
+            self.broadcast("🔴 লাইভ ছবি পাঠানো যায়নি — টোকেন/চ্যাট দেখে নিন।")
         else:  # failed — captures kept failing (locked screen is usual)
             err = f" ({last_error})" if last_error else ""
-            self.send(f"🔴 লাইভ দেখা বন্ধ হয়ে গেছে{err} — আবার চেষ্টা করতে /live লিখুন।")
+            self.broadcast(f"🔴 লাইভ দেখা বন্ধ হয়ে গেছে{err} — আবার চেষ্টা করতে /live লিখুন।")
 
     def start_live(self) -> None:
         """Start a live screen view in one Telegram message.
@@ -1902,6 +2348,7 @@ class TelegramBot:
         if live is None:
             self.send("🔴 লাইভ দেখা যাচ্ছে না — এজেন্টের ফোল্ডার জানা নেই।")
             return
+        self._live_chat_id = self._target_chat()
         ok, _msg = live.start()
         if not ok:
             self.live_status()
@@ -2217,7 +2664,7 @@ class TelegramBot:
             return False
         day = day or today_str()
         minutes = int(self.settings.get("digest_minutes", 60) or 60)
-        return self.send_long(build_digest_text(self.db, day, minutes))
+        return self.broadcast_long(build_digest_text(self.db, day, minutes))
 
     def send_status(self, day: str | None = None) -> bool:
         from .utils import today_str
@@ -2238,7 +2685,7 @@ class TelegramBot:
             return False
         text = (f"🚨 DeskAudit অ্যালার্ট [{alert.severity}]\n"
                 f"{alert.title}\n{alert.message}").strip()
-        return self.send(text)
+        return self.broadcast(text)
 
     def notify_new_app(self, infos: list[dict]) -> int:
         """Immediate Telegram notice for each newly opened program.
@@ -2262,7 +2709,7 @@ class TelegramBot:
             except Exception:
                 project = "Untagged"
             text = build_new_app_text(info, project)
-            if self.send(text):
+            if self.broadcast(text):
                 sent += 1
         return sent
 
@@ -2286,10 +2733,20 @@ class TelegramBot:
             {"text": "✅ হ্যাঁ, ডিলিট করো", "callback_data": f"dq:yes:{qid}:{token}"},
             {"text": "↩️ না, ফিরিয়ে দাও", "callback_data": f"dq:no:{qid}:{token}"},
         ]]}
-        return self.send_markup(
-            build_delete_text(item) + "\n\n(৫ মিনিটের মধ্যে সিদ্ধান্ত নিন — "
-            "না জানালে ফাইলটা সুরক্ষায়ই থাকবে।)",
-            markup)
+        # The owner decides (the buttons are hers alone). The manager
+        # is told the same thing in plain text — without the buttons,
+        # so a manager's tap can never purge or restore a file.
+        text = (build_delete_text(item) + "\n\n(৫ মিনিটের মধ্যে সিদ্ধান্ত নিন — "
+                "না জানালে ফাইলটা সুরক্ষায়ই থাকবে।)")
+        ok = self.send_markup(text, markup)
+        if self.manager_chat_id:
+            try:
+                send_message(self.token, self.manager_chat_id,
+                             build_delete_text(item) + "\n\n(সিদ্ধান্ত নেওয়ার "
+                             "অধিকার শুধু মালিকের — আপনি শুধু দেখছেন।)")
+            except Exception as exc:
+                self.log.warning("Telegram manager delete notice failed: %s", exc)
+        return ok
 
     def send_deleted_list(self) -> None:
         """Send /deleted with a ✅/↩️ button pair per held file
@@ -2568,6 +3025,15 @@ class TelegramBot:
         if self.file_explorer is None:
             self.send("📂 ফাইল এক্সপ্লোরার এই PC-তে চালু নেই।")
             return
+        parts = data.split(":")
+        kind = parts[0] if parts else ""
+        if self._from_manager and kind not in MANAGER_EXPLORER_KINDS:
+            # A manager may browse folders, not copy/move/hide/
+            # rename/delete/send a file, nor restore a hidden one.
+            # The gate runs BEFORE _clear_pending() below, so the
+            # tap can never cancel the owner's pending confirmation.
+            self.send(MANAGER_REFUSAL)
+            return
         # A tap is a new action: drop any stale pending confirmation
         # first (v12.11 audit — the same class as the v12.3 bug: an
         # old hide/copy confirm could later fire from an unrelated
@@ -2575,8 +3041,6 @@ class TelegramBot:
         # they are never affected.
         self._clear_pending()
         state = self._explorer_state()
-        parts = data.split(":")
-        kind = parts[0] if parts else ""
         arg = parts[1] if len(parts) > 1 else ""
         if kind == "drv":
             try:
@@ -2696,7 +3160,7 @@ class TelegramBot:
                 name = sel_p.name + ".zip"
                 sent = False
                 try:
-                    sent = send_document(self.token, self.chat_id, zip_path,
+                    sent = send_document(self.token, self._target_chat(), zip_path,
                                          f"📥 DeskAudit — {name}")
                 finally:
                     import os as _os
@@ -2718,7 +3182,7 @@ class TelegramBot:
                           "যাবে না। অন্য ড্রাইভে কপি/মুভ করুন.")
                 return
             name = sel.replace("\\", "/").split("/")[-1]
-            if send_document(self.token, self.chat_id, sel,
+            if send_document(self.token, self._target_chat(), sel,
                              f"📥 DeskAudit — {name}"):
                 self.send(f"📥 পাঠানো হয়েছে: {name}")
             else:
@@ -3027,6 +3491,35 @@ class TelegramBot:
         if not text:
             return
         low = text.lower()
+        if self._from_manager:
+            # A manager's text must never complete the owner's pending
+            # confirmation or a rename/new-folder wait — a stray হ্যাঁ
+            # from the manager would otherwise purge a file.
+            if low in self._CONFIRM_WORDS:
+                self.send(MANAGER_REFUSAL)
+                return
+            if low in self._CANCEL_WORDS:
+                await_kind = (self._explorer_state().get("await") or {}).get("kind")
+                if self._get_pending() is None and await_kind == "search":
+                    pass  # cancelling their own search wait is harmless
+                else:
+                    self.send(MANAGER_REFUSAL)
+                    return
+            elif text.startswith("/"):
+                cmd0 = text.split()[0].lower()
+                if cmd0 not in MANAGER_TEXT_COMMANDS:
+                    self.send(MANAGER_REFUSAL)
+                    return
+                if cmd0 == "/browser":
+                    rest = text.split()[1:]
+                    if rest and rest[0].lower() in ("close", "block", "unblock"):
+                        self.send(MANAGER_REFUSAL)
+                        return
+            else:
+                await_kind = (self._explorer_state().get("await") or {}).get("kind")
+                if await_kind != "search":
+                    self.send(MANAGER_REFUSAL)
+                    return
         # An answer the explorer asked for (a new name, a new folder
         # name, or a search word). A "/" command always wins (it
         # clears the wait below); a live confirmation wins over the
@@ -3069,14 +3562,44 @@ class TelegramBot:
             self._clear_explorer_await()
         day = today_str()
         if cmd in ("/start", "/help"):
-            self.send(HELP_TEXT)
+            self.send(MANAGER_HELP_TEXT if self._from_manager else HELP_TEXT)
         elif cmd == "/menu":
-            self.send_markup(
-                "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
-                "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
-                "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
-                "এক চাপে কিছু মুছবে না।)",
-                menu_keyboard())
+            if self._from_manager:
+                self.send_markup(
+                    "📋 DeskAudit মেনু (ম্যানেজার — শুধু দেখা):",
+                    manager_menu_keyboard())
+            else:
+                self.send_markup(
+                    "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
+                    "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
+                    "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
+                    "এক চাপে কিছু মুছবে না।)",
+                    menu_keyboard())
+        elif cmd == "/manager":
+            if len(args) == 1 and args[0].lower() == "remove":
+                self.manager_remove()
+            elif args:
+                self.send("👥 /manager লিখে ম্যানেজার দেখুন, /manager remove লিখে সরান।")
+            else:
+                self.show_manager()
+        elif cmd == "/drive":
+            if not args:
+                self.drive_status()
+            elif args[0].lower() == "auth":
+                self.drive_auth()
+            elif args[0].lower() == "code" and len(args) > 1:
+                self.drive_set_code(" ".join(args[1:]))
+            elif args[0].lower() == "code":
+                self.send("☁️ কোডটি দিন — /drive code <কোড> লিখুন।")
+            elif args[0].lower() == "on":
+                self.drive_toggle(True)
+            elif args[0].lower() == "off":
+                self.drive_toggle(False)
+            elif args[0].lower() == "test":
+                self.drive_test()
+            else:
+                self.send("☁️ /drive — অবস্থা | /drive auth — যুক্ত করা | "
+                          "/drive code <কোড> | /drive on|off | /drive test")
         elif cmd == "/status":
             self.send_status(day)
         elif cmd == "/today":
@@ -3249,6 +3772,25 @@ class TelegramBot:
 
         answer_callback(self.token, callback_query_id)
         day = today_str()
+        if self._from_manager:
+            # A manager's tap must never run a control action or
+            # decide a file. The allowed sets are the whole rule.
+            if data.startswith(("dq:", "confirm:")):
+                self.send(MANAGER_REFUSAL)
+                return
+            if data.startswith("x:"):
+                kind = data[2:].split(":")[0]
+                if kind not in MANAGER_EXPLORER_KINDS:
+                    self.send(MANAGER_REFUSAL)
+                    return
+            elif data.startswith("m:"):
+                action = data[2:].split(":")[0]
+                if action not in MANAGER_MENU:
+                    self.send(MANAGER_REFUSAL)
+                    return
+            else:
+                self.send(MANAGER_REFUSAL)
+                return
         if data.startswith("dq:"):
             # dq:yes:<qid>:<token> / dq:no:<qid>:<token> — a decision
             # on ONE quarantined file (v12.13, M9). Each file's
@@ -3398,19 +3940,30 @@ class TelegramBot:
                 # Only asks — the owner still confirms with ✅ first.
                 self.request_reset()
             elif cmd == "menu":
-                self.send_markup(
-                    "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
-                    "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
-                    "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
-                    "এক চাপে কিছু মুছবে না।)",
-                    menu_keyboard())
+                if self._from_manager:
+                    self.send_markup(
+                        "📋 DeskAudit মেনু (ম্যানেজার — শুধু দেখা):",
+                        manager_menu_keyboard())
+                else:
+                    self.send_markup(
+                        "📋 DeskAudit মেনু — চাপলেই কাজ হবে:\n"
+                        "📊 দেখা | 🎛️ নিয়ন্ত্রণ | 💾 ডেটা ও PC\n"
+                        "(বন্ধ/মোছা/রিসেটের মতো কাজে আগে নিশ্চিতকরণ চাইবে — "
+                        "এক চাপে কিছু মুছবে না।)",
+                        menu_keyboard())
             elif cmd == "noop":
                 # v12.13: intentionally silent — a button that does
                 # nothing (e.g. a disabled-looking row). Without this
                 # branch the tap fell into the "unknown button" reply.
                 pass
             elif cmd == "help":
-                self.send(HELP_TEXT)
+                self.send(MANAGER_HELP_TEXT if self._from_manager else HELP_TEXT)
+            elif cmd == "manager":
+                self.show_manager()
+            elif cmd.startswith("manager_add:"):
+                self.manager_add(cmd[len("manager_add:"):])
+            elif cmd == "drive":
+                self.drive_status()
             else:
                 self.send("❓ এই বোতামটা চিনলাম না। /help লিখুন।")
         else:
@@ -3458,20 +4011,42 @@ class TelegramBot:
                 cb = upd.get("callback_query") or {}
                 if cb:
                     chat = str(((cb.get("from") or {}).get("id", "")))
-                    if chat != self.chat_id:
-                        continue  # only the owner's chat may command the bot
-                    self.handle_callback(str(cb.get("data", "")),
-                                         str(cb.get("id", "")))
+                    if chat == self.chat_id:
+                        from_manager = False
+                    elif self.manager_chat_id and chat == self.manager_chat_id:
+                        from_manager = True
+                    else:
+                        self._record_unknown_chat(cb.get("from") or {})
+                        continue
+                    self._reply_chat_id = chat
+                    self._from_manager = from_manager
+                    try:
+                        self.handle_callback(str(cb.get("data", "")),
+                                             str(cb.get("id", "")))
+                    finally:
+                        self._reply_chat_id = None
+                        self._from_manager = False
                     handled += 1
                     continue
                 msg = upd.get("message") or {}
                 text = (msg.get("text") or "").strip()
                 chat = str((msg.get("chat") or {}).get("id", ""))
-                if chat != self.chat_id:
-                    continue  # only the owner's chat may command the bot
+                if chat == self.chat_id:
+                    from_manager = False
+                elif self.manager_chat_id and chat == self.manager_chat_id:
+                    from_manager = True
+                else:
+                    self._record_unknown_chat(msg.get("from") or {})
+                    continue
                 if not text:
                     continue
-                self.handle_text(text)
+                self._reply_chat_id = chat
+                self._from_manager = from_manager
+                try:
+                    self.handle_text(text)
+                finally:
+                    self._reply_chat_id = None
+                    self._from_manager = False
                 handled += 1
             except Exception as exc:
                 self.log.warning("Telegram command failed: %s", exc)

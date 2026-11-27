@@ -259,7 +259,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3, dispose-before-shutdown fix in v12.14.4, mouse cursor in recordings + smooth 5 fps in v12.14.5, live screen view in v12.15)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9, full Telegram menu in v12.10, 360° Telegram file explorer in v12.11, delete-protection audit fixes in v12.12, full-system audit in v12.13, duplicate-message fix + screen recording in v12.14, recording failure reporting in v12.14.1, locked-screen pre-check + version in /status in v12.14.2, access-violation fix in v12.14.3, dispose-before-shutdown fix in v12.14.4, mouse cursor in recordings + smooth 5 fps in v12.14.5, live screen view in v12.15, 2-second live refresh + manager chat + Drive recording upload in v12.16)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -680,7 +680,9 @@ startup log line, so Task Manager can be checked against it.
 
 **Mouse cursor + smooth video (v12.14.5)** — recording worked but the video showed no mouse and was not smooth. Two causes, both in the recorder: (1) BitBlt never copies the mouse pointer — Windows draws it as a separate hardware overlay — so every frame now paints the pointer with GetCursorInfo + DrawIconEx, corrected by the cursor's hotspot so the arrow tip sits where the pointer is (and a hidden pointer, or a failed call, never loses a frame); (2) frames were 2 s apart (0.5 fps, a slideshow) — short recordings now run at 5 fps, with the 700-frame cap spreading longer ones out as before (1 min = 300 frames, 2 min = 600, 30 min ≈ 2.6 s per frame). A fake-DLL test locks the cursor drawing and hotspot math in place; the cursor structs are size-tested too (the first version of the POINT struct used c_long, which is 8 bytes on Linux but 4 on Windows — caught by the test before delivery).
 
-**Live screen view (v12.15)** — /live (or the 🔴 লাইভ দেখা menu button) opens one Telegram message whose photo refreshes in place every 10 seconds (editMessageMedia), so the chat is never flooded with a new photo per refresh; the caption carries the clock so a stale frame shows an old time. It stops after 10 minutes, on the ⏹️ থামাও button, on /live stop, or after three failed captures in a row (a locked screen is the usual cause — the locked-screen pre-check from v12.14.2 runs first). The dashboard has a matching 🔴 লাইভ স্ক্রিন card polling a new /api/live-shot JPEG every 10 s (401 while the dashboard is locked). Both forms reuse the same capture as /screenshot and /record — including the mouse cursor from v12.14.5 — and the frame file is deleted when the view ends, so nothing is kept. A LiveViewer thread (new deskaudit/live_view.py, injectable capture/send/edit) is covered by 7 timing tests; sendPhoto-with-message-id and editMessageMedia are mocked-Telegram tested too.
+**Live screen view (v12.15)** — /live (or the 🔴 লাইভ দেখা menu button) opens one Telegram message whose photo refreshes in place every 2 seconds (editMessageMedia), so the chat is never flooded with a new photo per refresh; the caption carries the clock so a stale frame shows an old time. It stops after 10 minutes, on the ⏹️ থামাও button, on /live stop, or after three failed captures in a row (a locked screen is the usual cause — the locked-screen pre-check from v12.14.2 runs first). The dashboard has a matching 🔴 লাইভ স্ক্রিন card polling a new /api/live-shot JPEG every 2 s (401 while the dashboard is locked). Both forms reuse the same capture as /screenshot and /record — including the mouse cursor from v12.14.5 — and the frame file is deleted when the view ends, so nothing is kept. A LiveViewer thread (new deskaudit/live_view.py, injectable capture/send/edit) is covered by 7 timing tests; sendPhoto-with-message-id and editMessageMedia are mocked-Telegram tested too.
+
+**2-second live refresh, manager chat + Drive recording upload (v12.16)** — the live view now refreshes every 2 seconds (Telegram edits every second risk flood control stopping the view mid-session; the dashboard card polls /api/live-shot every 2 s too). A second Telegram chat can be a manager: the manager sees alerts, digests, recordings, screenshots and the live view, and may run view-only commands — but can never control the PC (no shutdown/lock/close/freeze, no recording start, no delete decisions; a stray হ্যাঁ from the manager can never purge a file). The owner approves the manager from /manager, which lists chats that messaged the bot. Finished recordings now also upload to the owner's Google Drive (new deskaudit/drive_upload.py, stdlib OAuth with drive.file scope — only files the app created) into a DeskAudit Recordings folder, and the owner gets the link; the local file is deleted only when Telegram or Drive got it — if both fail it is kept and the owner is told the path. One-time Drive setup: a Google Cloud OAuth client (Desktop app) whose Client ID + Secret go in Dashboard Settings → Google Drive, then /drive auth for the sign-in link and /drive code <কোড>. Covered by 8 mocked Drive tests, 6 manager/broadcast tests and a dashboard settings test.
 
 **360° Telegram file explorer (v12.11)**
 
@@ -898,7 +900,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.15.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.16.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -940,7 +942,7 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.15-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.16-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**

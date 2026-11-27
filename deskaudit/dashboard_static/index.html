@@ -79,7 +79,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
   <section><h2>Today at a glance</h2><div id="glance" class="muted">Loading…</div></section>
 
   <section><h2>🔴 লাইভ স্ক্রিন</h2>
-  <p><button id="liveStartBtn">▶️ লাইভ শুরু</button> <button id="liveStopBtn" disabled>⏹️ থামাও</button> <span id="liveStatus" class="muted">বন্ধ আছে — চালু করলে প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।</span></p>
+  <p><button id="liveStartBtn">▶️ লাইভ শুরু</button> <button id="liveStopBtn" disabled>⏹️ থামাও</button> <span id="liveStatus" class="muted">বন্ধ আছে — চালু করলে প্রতি ২ সেকেন্ডে নতুন ছবি আসবে।</span></p>
   <div id="liveWrap" style="display:none"><img id="liveImg" alt="লাইভ স্ক্রিন" style="max-width:100%;border:1px solid var(--border);border-radius:8px"><p class="muted" id="liveTime"></p></div>
   <p class="muted">শুধু এই PC-র স্ক্রিন — Telegram-এ /live লিখলেও একই জিনিস ফোনে দেখা যায়।</p></section>
 
@@ -204,11 +204,21 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><input id="set_telegram_enabled" type="checkbox"> Telegram বট চালু</label>
       <label><span>Bot token <b id="telegramTokenStatus"></b></span><input id="set_telegram_bot_token" type="password" autocomplete="off" placeholder="নতুন টোকেন লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_telegram_clear_token" type="checkbox"> টোকেন মুছে ফেলুন</label></label>
       <label><span>Chat id</span><input id="set_telegram_chat_id" type="text" placeholder="যেমন 123456789"></label>
+      <label><span>Manager chat id (দ্বিতীয় চ্যাট — শুধু দেখবে)</span><input id="set_telegram_manager_chat_id" type="text" placeholder="খালি থাকলে ম্যানেজার নেই"></label>
       <label><span>Command poll (seconds, 10–600)</span><input id="set_telegram_poll_seconds" type="number" min="10" max="600"></label>
       <label><span>Digest (minutes, 0 = off, 1–1440)</span><input id="set_telegram_digest_minutes" type="number" min="0" max="1440"></label>
       <label><input id="set_telegram_notify_critical" type="checkbox"> Critical অ্যালার্ট সাথে সাথে পাঠান</label>
     </div>
     <button id="testTelegramBtn" type="button">📩 Telegram পরীক্ষা বার্তা পাঠান</button><span id="telegramTestStatus"></span>
+    <h3>Google Drive আপলোড (রেকর্ডিং)</h3>
+    <p class="muted">রেকর্ডিং শেষ হলে ভিডিও Drive-এও আপলোড হবে — PC মুছে গেলেও ভিডিও থাকবে। সেটআপ: Google Cloud Console → নতুন প্রজেক্ট → Drive API চালু → OAuth consent screen → Desktop app ক্রেডেনশিয়াল (Client ID + Secret) — সেগুলো এখানে লিখুন, তারপর Telegram-এ /drive auth লিখে একবার সাইন-ইন করুন। Secret দেখানো হয় না।</p>
+    <div class="setgrid">
+      <label><input id="set_drive_enabled" type="checkbox"> Drive আপলোড চালু</label>
+      <label><span>Client ID <b id="driveClientStatus"></b></span><input id="set_drive_client_id" type="text" placeholder="নতুন ID লিখুন (খালি রাখলে আগেরটাই থাকবে)"></label>
+      <label><span>Client secret <b id="driveSecretStatus"></b></span><input id="set_drive_client_secret" type="password" autocomplete="off" placeholder="নতুন secret লিখুন (খালি রাখলে আগেরটাই থাকবে)"><br><label><input id="set_drive_clear_secret" type="checkbox"> Secret মুছে ফেলুন</label></label>
+      <label><span>ফোল্ডারের নাম</span><input id="set_drive_folder_name" type="text" placeholder="DeskAudit Recordings"></label>
+      <label><span>Drive যুক্ত আছে <b id="driveConnectedStatus"></b></span></label>
+    </div>
     <h3>নতুন প্রোগ্রাম অ্যালার্ট (New-program alerts)</h3>
     <p class="note">এজেন্ট চালু হওয়ার পর কেউ কোনো নতুন প্রোগ্রাম খুললেই Telegram-এ সাথে সাথে মেসেজ যাবে — কোন প্রোগ্রাম, কোথায় আছে, কোন উইন্ডো খোলা, কখন খুলেছে, কোন প্রজেক্ট। মেটাডেটা মাত্র — ভেতরে কী টাইপ হচ্ছে তা কখনো আসে না।</p>
     <div class="settings-grid">
@@ -463,9 +473,18 @@ async function loadSettings(){
     $('telegramTokenStatus').textContent=s.telegram.bot_token_set?'(টোকেন সেট করা আছে)':'(টোকেন সেট করা নেই)';
     $('set_telegram_bot_token').value='';
     $('set_telegram_chat_id').value=s.telegram.chat_id||'';
+    $('set_telegram_manager_chat_id').value=s.telegram.manager_chat_id||'';
     setNum('set_telegram_poll_seconds',s.telegram.poll_seconds);
     setNum('set_telegram_digest_minutes',s.telegram.digest_minutes);
     setChk('set_telegram_notify_critical',s.telegram.notify_critical);
+  }
+  if(s.drive){
+    setChk('set_drive_enabled',s.drive.enabled);
+    $('driveClientStatus').textContent=s.drive.client_id_set?'(ID সেট করা আছে)':'(ID সেট করা নেই)';
+    $('set_drive_client_id').value='';
+    $('driveSecretStatus').textContent=s.drive.client_secret_set?'(secret সেট করা আছে)':'(secret সেট করা নেই)';
+    $('driveConnectedStatus').textContent=s.drive.refresh_token_set?'✅ হ্যাঁ — রেকর্ডিং Drive-এ যাবে':'❌ না — /drive auth করে যুক্ত করুন';
+    $('set_drive_folder_name').value=s.drive.folder_name||'';
   }
   if(s.app_watch){
     setChk('set_appwatch_enabled',s.app_watch.enabled);
@@ -545,8 +564,15 @@ async function saveSettings(){
   if($('set_telegram_clear_token').checked) updates.telegram.bot_token='';
   else if(token) updates.telegram.bot_token=token;
   const chatId=$('set_telegram_chat_id').value.trim(); if(chatId) updates.telegram.chat_id=chatId;
+  const mgrId=$('set_telegram_manager_chat_id').value.trim(); updates.telegram.manager_chat_id=mgrId;
   const tgInts={poll_seconds:'set_telegram_poll_seconds',digest_minutes:'set_telegram_digest_minutes'};
   for(const [k,id] of Object.entries(tgInts)){const v=num(id); if(v!==null) updates.telegram[k]=v}
+  updates.drive={enabled:$('set_drive_enabled').checked};
+  const dClient=$('set_drive_client_id').value.trim(); if(dClient) updates.drive.client_id=dClient;
+  const dSecret=$('set_drive_client_secret').value.trim();
+  if($('set_drive_clear_secret').checked) updates.drive.client_secret='';
+  else if(dSecret) updates.drive.client_secret=dSecret;
+  const dFolder=$('set_drive_folder_name').value.trim(); if(dFolder) updates.drive.folder_name=dFolder;
   updates.app_watch={enabled:$('set_appwatch_enabled').checked,notify_new_app:$('set_appwatch_notify_new_app').checked};
   const awInts={cooldown_minutes:'set_appwatch_cooldown_minutes',max_per_tick:'set_appwatch_max_per_tick'};
   for(const [k,id] of Object.entries(awInts)){const v=num(id); if(v!==null) updates.app_watch[k]=v}
@@ -595,13 +621,13 @@ $('saveSettingsBtn').onclick=saveSettings;
 $('testTelegramBtn').onclick=testTelegram;
 $('testEmailBtn').onclick=testEmail;
 $('lockBtn').onclick=async()=>{ try{ await fetch('/api/lock',{method:'POST'}); }catch(e){} location.reload(); };
-// Live screen (v12.15): poll /api/live-shot every 10 s while on.
+// Live screen (v12.15): poll /api/live-shot every 2 s while on.
 // A failed shot (locked screen is the usual cause) stops the timer
 // instead of showing a broken image forever.
 let liveTimer=null;
 function liveShot(){ $('liveImg').src='/api/live-shot?t='+Date.now(); }
-$('liveStartBtn').onclick=()=>{ if(liveTimer) return; $('liveWrap').style.display='block'; $('liveStartBtn').disabled=true; $('liveStopBtn').disabled=false; $('liveStatus').textContent='🔴 লাইভ চলছে — প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।'; liveShot(); liveTimer=setInterval(()=>{ liveShot(); $('liveTime').textContent='শেষ আপডেট: '+new Date().toLocaleTimeString(); },10000); };
-$('liveStopBtn').onclick=()=>{ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } $('liveStartBtn').disabled=false; $('liveStopBtn').disabled=true; $('liveStatus').textContent='বন্ধ আছে — চালু করলে প্রতি ১০ সেকেন্ডে নতুন ছবি আসবে।'; };
+$('liveStartBtn').onclick=()=>{ if(liveTimer) return; $('liveWrap').style.display='block'; $('liveStartBtn').disabled=true; $('liveStopBtn').disabled=false; $('liveStatus').textContent='🔴 লাইভ চলছে — প্রতি ২ সেকেন্ডে নতুন ছবি আসবে।'; liveShot(); liveTimer=setInterval(()=>{ liveShot(); $('liveTime').textContent='শেষ আপডেট: '+new Date().toLocaleTimeString(); },2000); };
+$('liveStopBtn').onclick=()=>{ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } $('liveStartBtn').disabled=false; $('liveStopBtn').disabled=true; $('liveStatus').textContent='বন্ধ আছে — চালু করলে প্রতি ২ সেকেন্ডে নতুন ছবি আসবে।'; };
 $('liveImg').onerror=()=>{ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } $('liveStartBtn').disabled=false; $('liveStopBtn').disabled=true; $('liveStatus').textContent='⚠️ ছবি আসছে না — স্ক্রিন লক আছে কিনা দেখুন, তারপর আবার চালু করুন।'; };
 load();
 loadSettings();

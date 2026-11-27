@@ -388,6 +388,261 @@ def test_send_email_failure():
     print("send_email failure passed")
 
 
+def test_manager_view_command_and_control_refusal():
+    """v12.16: the manager's chat may run view commands (the reply
+    goes to the manager) but control commands are refused — and a
+    manager's হ্যাঁ can never fire the owner's pending confirmation."""
+    import deskaudit.telegram as tg
+
+    sent = []
+    old_send = tg.send_message
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999",
+                                   "manager_chat_id": "555"})
+            # View command from the manager: answered in the manager's chat.
+            bot._reply_chat_id = "555"
+            bot._from_manager = True
+            try:
+                bot.handle_text("/status")
+            finally:
+                bot._reply_chat_id = None
+                bot._from_manager = False
+            assert sent[-1][0] == "555"
+            assert "বর্তমান অবস্থা" in sent[-1][1]
+            # Control commands: refused, in the manager's chat.
+            bot._reply_chat_id = "555"
+            bot._from_manager = True
+            try:
+                bot.handle_text("/shutdown")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                assert sent[-1][0] == "555"
+                bot.handle_text("/record 1")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                bot.handle_text("/browser block example.com")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                # A stray হ্যাঁ from the manager must not fire the owner's pending.
+                bot._set_pending("clear", {"date": day})
+                bot.handle_text("হ্যাঁ")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                assert bot._get_pending() is not None
+                bot._clear_pending()
+            finally:
+                bot._reply_chat_id = None
+                bot._from_manager = False
+            db.close()
+    finally:
+        tg.send_message = old_send
+    print("manager view/refusal passed")
+
+
+def test_manager_callbacks_refused():
+    """v12.16: a manager's tap on a control button is refused; a
+    view button works. The explorer's write taps are refused too."""
+    import deskaudit.telegram as tg
+
+    sent = []
+    posts = []
+    old_send = tg.send_message
+    old_answer = tg.answer_callback
+    old_post = tg._post
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+    tg.answer_callback = lambda token, qid: True
+    tg._post = lambda token, method, payload, timeout=15: posts.append(method) or {
+        "ok": True, "result": {"message_id": 42}}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+
+            class _FakeExplorer:
+                def roots(self):
+                    return []
+
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999",
+                                   "manager_chat_id": "555"},
+                              file_explorer=_FakeExplorer())
+            bot._reply_chat_id = "555"
+            bot._from_manager = True
+            try:
+                bot.handle_callback("m:shutdown", "q1")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                bot.handle_callback("m:status", "q2")
+                assert "বর্তমান অবস্থা" in sent[-1][1]
+                bot.handle_callback("dq:yes:1:tok", "q3")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                bot.handle_callback("x:act:send", "q4")
+                assert "শুধু দেখা যায়" in sent[-1][1]
+                before = len(sent)
+                bot.handle_callback("x:up", "q5")
+                # "up" is browse-only — no refusal was sent, and the
+                # explorer refreshed instead (via _post, not send).
+                assert len(sent) == before
+                assert posts and posts[-1] in ("sendMessage", "editMessageText")
+            finally:
+                bot._reply_chat_id = None
+                bot._from_manager = False
+            db.close()
+    finally:
+        tg.send_message = old_send
+        tg.answer_callback = old_answer
+        tg._post = old_post
+    print("manager callbacks refused passed")
+
+
+def test_poll_routes_manager_and_records_unknown():
+    """v12.16: poll answers the manager's chat, and remembers a
+    stranger's chat (for /manager) instead of answering it."""
+    import deskaudit.telegram as tg
+
+    sent = []
+
+    def fake_get_updates(token, offset):
+        return [
+            {"update_id": 20,
+             "message": {"text": "/status", "chat": {"id": 555},
+                         "from": {"id": 555, "first_name": "Rahim"}}},
+            {"update_id": 21,
+             "message": {"text": "/status", "chat": {"id": 777},
+                         "from": {"id": 777, "first_name": "Stranger"}}},
+        ]
+
+    old_updates = tg.get_updates
+    old_send = tg.send_message
+    tg.get_updates = fake_get_updates
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999",
+                                   "manager_chat_id": "555"})
+            assert bot.poll_commands() == 1  # manager answered; stranger ignored
+            assert len(sent) == 1
+            assert sent[0][0] == "555"
+            assert "বর্তমান অবস্থা" in sent[0][1]
+            unknown = bot._unknown_chats()
+            assert any(str(c.get("chat_id")) == "777" for c in unknown)
+            assert not any(str(c.get("chat_id")) == "555" for c in unknown)
+            db.close()
+    finally:
+        tg.get_updates = old_updates
+        tg.send_message = old_send
+    print("poll routes manager passed")
+
+
+def test_broadcast_goes_to_both_chats():
+    """v12.16: alerts reach the owner AND the manager."""
+    import deskaudit.telegram as tg
+
+    sent = []
+    old_send = tg.send_message
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999",
+                                   "manager_chat_id": "555"})
+
+            class _Alert:
+                severity = "warning"
+                title = "বড় ডাউনলোড"
+                message = "1.2 MB ডাউনলোড হয়েছে"
+
+            assert bot.notify_alert(_Alert()) is True
+            assert [c for c, _t in sent] == ["999", "555"]
+            assert "বড় ডাউনলোড" in sent[0][1]
+            db.close()
+    finally:
+        tg.send_message = old_send
+    print("broadcast to both passed")
+
+
+def test_manager_add_and_remove():
+    """v12.16: the owner approves a stranger from /manager; the
+    welcome goes to the new manager; /manager remove revokes it."""
+    import deskaudit.telegram as tg
+
+    sent = []
+    posts = []
+    old_send = tg.send_message
+    old_post = tg._post
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+    tg._post = lambda token, method, payload, timeout=15: posts.append(payload) or {
+        "ok": True, "result": {"message_id": 42}}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999"},
+                              config_path=os.path.join(tmp, "config.yaml"))
+            bot._record_unknown_chat({"id": 777, "first_name": "Rahim"})
+            bot.handle_text("/manager")
+            # show_manager sends with a keyboard (via _post), not send_message.
+            assert posts and "Rahim" in posts[-1].get("text", "")
+            bot.manager_add("777")
+            assert bot.manager_chat_id == "777"
+            assert sent[-1][0] == "777"  # the welcome went to the manager
+            assert "ম্যানেজার" in sent[-1][1]
+            bot.manager_remove()
+            assert bot.manager_chat_id == ""
+            assert any(c == "777" and "বন্ধ করা হয়েছে" in t for c, t in sent)
+            assert sent[-1][0] == "999"  # the owner's confirmation
+            assert "সরিয়ে দেওয়া হয়েছে" in sent[-1][1]
+            db.close()
+    finally:
+        tg.send_message = old_send
+        tg._post = old_post
+    print("manager add/remove passed")
+
+
+def test_drive_status_and_code():
+    """v12.16: /drive explains the setup when unconfigured, and
+    /drive code stores the refresh token after a mocked exchange."""
+    import deskaudit.telegram as tg
+
+    sent = []
+    old_send = tg.send_message
+    tg.send_message = lambda token, chat_id, text: sent.append((chat_id, text)) or True
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._payload = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"access_token": "acc1", "refresh_token": "ref9",
+                          "expires_in": 3600})
+
+    old_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, day = _seed_db(os.path.join(tmp, "t.db"))
+            bot = TelegramBot(db, {"bot_token": "tok", "chat_id": "999"})
+            bot.handle_text("/drive")
+            assert "সেট করা হয়নি" in sent[-1][1]
+            bot2 = TelegramBot(db, {"bot_token": "tok", "chat_id": "999"},
+                               drive_settings={"client_id": "cid",
+                                               "client_secret": "csec"})
+            bot2.handle_text("/drive code abc123")
+            assert "যুক্ত হয়েছে" in sent[-1][1]
+            assert bot2.drive_settings.get("refresh_token") == "ref9"
+            assert bot2.drive_uploader.configured is True
+            db.close()
+    finally:
+        tg.send_message = old_send
+        urllib.request.urlopen = old_urlopen
+    print("drive status/code passed")
+
+
 if __name__ == "__main__":
     test_send_message_mocked()
     test_send_message_failure()
@@ -404,4 +659,10 @@ if __name__ == "__main__":
     test_send_email_failure()
     test_send_photo_id_returns_message_id()
     test_edit_photo_posts_media()
+    test_manager_view_command_and_control_refusal()
+    test_manager_callbacks_refused()
+    test_poll_routes_manager_and_records_unknown()
+    test_broadcast_goes_to_both_chats()
+    test_manager_add_and_remove()
+    test_drive_status_and_code()
     print("ALL TELEGRAM + EMAIL TESTS PASSED")

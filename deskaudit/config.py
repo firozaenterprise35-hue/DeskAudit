@@ -121,6 +121,7 @@ class Config:
     transfers: dict = field(default_factory=dict)
     telegram: dict = field(default_factory=dict)
     email: dict = field(default_factory=dict)
+    drive: dict = field(default_factory=dict)
     app_watch: dict = field(default_factory=dict)
     delete_protect: dict = field(default_factory=dict)
     explorer: dict = field(default_factory=dict)
@@ -177,6 +178,11 @@ class Config:
 
         telegram = {**DEFAULT_TELEGRAM, **(merged.get("telegram", {}) or {})}
         email = {**DEFAULT_EMAIL, **(merged.get("email", {}) or {})}
+        # Google Drive auto-upload (v12.16): same pattern. The OAuth
+        # client secret + refresh token belong in config.local.yaml.
+        from .drive_upload import DEFAULT_DRIVE
+
+        drive = {**DEFAULT_DRIVE, **(merged.get("drive", {}) or {})}
         # New-program watch: same pattern.
         from .app_watch import DEFAULT_APP_WATCH
 
@@ -194,7 +200,7 @@ class Config:
         # Quoted "false" strings in nested sections must not become
         # True either (v12.13 audit, C-m6): normalise every `enabled`
         # / `notify_*` flag through the same coercion.
-        for section in (transfers, telegram, email, app_watch, delete_protect, explorer):
+        for section in (transfers, telegram, email, drive, app_watch, delete_protect, explorer):
             for key, value in list(section.items()):
                 if key in ("enabled", "notify_new_app", "notify_critical",
                            "usb_alert", "print_alert", "sensitive_copy_alert"):
@@ -238,6 +244,7 @@ class Config:
             transfers=transfers,
             telegram=telegram,
             email=email,
+            drive=drive,
             app_watch=app_watch,
             delete_protect=delete_protect,
             explorer=explorer,

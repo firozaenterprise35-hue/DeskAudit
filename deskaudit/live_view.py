@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-REFRESH_SECONDS = 10.0
+REFRESH_SECONDS = 2.0
 MAX_SECONDS = 600  # a live view runs at most 10 minutes, then stops
 MAX_CONSECUTIVE_FAILURES = 3
 

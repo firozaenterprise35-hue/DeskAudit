@@ -185,7 +185,17 @@ def test_live_view_frame_file_cleaned_up():
     print("live view frame file cleaned up passed")
 
 
+def test_refresh_interval_is_two_seconds():
+    # v12.16: the owner asked for a refresh every 1-2 seconds, not
+    # every 10. Two seconds is the safe end of that range: Telegram
+    # flood control can stop a live view that edits every second.
+    from deskaudit.live_view import REFRESH_SECONDS
+
+    assert REFRESH_SECONDS == 2.0
+
+
 if __name__ == "__main__":
+    test_refresh_interval_is_two_seconds()
     test_live_view_refreshes_one_message()
     test_live_view_start_twice_and_stop_idle()
     test_live_view_time_up()

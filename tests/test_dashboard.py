@@ -273,6 +273,46 @@ def test_dashboard_settings():
     print("dashboard settings tests passed")
 
 
+def test_dashboard_drive_and_manager_settings():
+    """v12.16: the drive section saves (secrets write-only, never
+    returned) and the manager chat id round-trips through settings."""
+    import os
+
+    from deskaudit.dashboard import get_settings, save_settings
+
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "config.yaml").write_text("poll_interval_seconds: 5\n", encoding="utf-8")
+    view = get_settings(tmp / "config.yaml")
+    assert view["drive"]["enabled"] is True
+    assert view["drive"]["client_id_set"] is False
+    assert view["drive"]["refresh_token_set"] is False
+    assert view["drive"]["folder_name"] == "DeskAudit Recordings"
+    assert view["telegram"]["manager_chat_id"] == ""
+    saved = save_settings(tmp / "config.yaml", {
+        "drive": {"client_id": "cid123.apps.googleusercontent.com",
+                  "client_secret": "sec-abc", "folder_name": "My Recordings",
+                  "enabled": False},
+        "telegram": {"manager_chat_id": "555"},
+    })
+    assert saved["drive"]["client_id_set"] is True
+    assert saved["drive"]["client_secret_set"] is True
+    assert saved["drive"]["folder_name"] == "My Recordings"
+    assert saved["drive"]["enabled"] is False
+    assert saved["telegram"]["manager_chat_id"] == "555"
+    assert "sec-abc" not in json.dumps(saved)  # secret never returned
+    local_text = (tmp / "config.local.yaml").read_text(encoding="utf-8")
+    assert "sec-abc" in local_text
+    # Empty client secret clears it; empty manager id clears it too.
+    saved = save_settings(tmp / "config.yaml", {
+        "drive": {"client_secret": ""},
+        "telegram": {"manager_chat_id": ""},
+    })
+    assert saved["drive"]["client_secret_set"] is False
+    assert saved["telegram"]["manager_chat_id"] == ""
+    assert saved["drive"]["client_id_set"] is True  # untouched
+    print("dashboard drive/manager settings passed")
+
+
 def test_dashboard_settings_http():
     tmp = Path(tempfile.mkdtemp())
     db, date = seed_db(tmp)
@@ -382,6 +422,7 @@ if __name__ == "__main__":
     test_dashboard_http()
     test_dashboard_live_shot()
     test_dashboard_settings()
+    test_dashboard_drive_and_manager_settings()
     test_save_settings_refuses_broken_local()
     test_dashboard_settings_http()
     test_dashboard_js_syntax()

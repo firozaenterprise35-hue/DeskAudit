@@ -322,7 +322,8 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 projects_path=config.project_root / "projects.yaml",
                 tagger=tagger,
                 delete_protector=delete_protector,
-                file_explorer=file_explorer)
+                file_explorer=file_explorer,
+                drive_settings=config.drive)
             if telegram_bot.configured:
                 log.info("Telegram bot on: digests every %s min, commands polled.",
                          telegram_bot.settings.get("digest_minutes", 60))

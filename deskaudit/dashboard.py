@@ -382,6 +382,7 @@ _BOOL_SETTINGS: set[tuple[str, str]] = {
     ("transfers", "sensitive_copy_alert"),
     ("telegram", "enabled"),
     ("telegram", "notify_critical"),
+    ("drive", "enabled"),
     ("app_watch", "enabled"),
     ("app_watch", "notify_new_app"),
     ("delete_protect", "enabled"),
@@ -456,8 +457,12 @@ def get_settings(config_path: str | Path) -> dict:
     from .file_explorer import DEFAULT_EXPLORER
 
     explorer = {**DEFAULT_EXPLORER, **(cfg.explorer or {})}
+    from .drive_upload import DEFAULT_DRIVE
+
+    drive = {**DEFAULT_DRIVE, **(cfg.drive or {})}
     local_telegram = local.get("telegram") if isinstance(local.get("telegram"), dict) else {}
     local_email = local.get("email") if isinstance(local.get("email"), dict) else {}
+    local_drive = local.get("drive") if isinstance(local.get("drive"), dict) else {}
     return {
         "llm": {
             "provider": str(cfg.llm.get("provider") or "gemini"),
@@ -524,9 +529,17 @@ def get_settings(config_path: str | Path) -> dict:
             "enabled": bool(telegram.get("enabled", False)),
             "bot_token_set": bool(local_telegram.get("bot_token")),
             "chat_id": str(telegram.get("chat_id") or ""),
+            "manager_chat_id": str(telegram.get("manager_chat_id") or ""),
             "poll_seconds": int(telegram.get("poll_seconds", 30)),
             "digest_minutes": int(telegram.get("digest_minutes", 60)),
             "notify_critical": bool(telegram.get("notify_critical", True)),
+        },
+        "drive": {
+            "enabled": bool(drive.get("enabled", True)),
+            "client_id_set": bool(local_drive.get("client_id")),
+            "client_secret_set": bool(local_drive.get("client_secret")),
+            "refresh_token_set": bool(local_drive.get("refresh_token")),
+            "folder_name": str(drive.get("folder_name") or "DeskAudit Recordings"),
         },
         "app_watch": {
             "enabled": bool(app_watch.get("enabled", True)),
@@ -586,7 +599,7 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
     errors: list[str] = []
     for section, values in updates.items():
         if section not in ("llm", "agent", "alerts", "backup", "secret_gate", "transfers",
-                           "telegram", "email", "app_watch", "delete_protect", "explorer"):
+                           "telegram", "email", "drive", "app_watch", "delete_protect", "explorer"):
             continue
         if not isinstance(values, dict):
             errors.append(f"{section} must be an object")
@@ -630,6 +643,42 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
                     errors.append("telegram.chat_id must be a non-empty id")
                 elif len(value) > 64:
                     errors.append("telegram.chat_id is too long")
+                else:
+                    merged[key] = value.strip()
+            elif section == "telegram" and key == "manager_chat_id":
+                # The second chat (a manager, view-only). Empty clears it.
+                if not isinstance(value, str):
+                    errors.append("telegram.manager_chat_id must be a string")
+                elif value == "":
+                    merged[key] = None
+                elif len(value.strip()) > 64:
+                    errors.append("telegram.manager_chat_id is too long")
+                else:
+                    merged[key] = value.strip()
+            elif section == "drive" and key == "client_id":
+                if not isinstance(value, str):
+                    errors.append("drive.client_id must be a string")
+                elif value == "":
+                    merged[key] = None  # clear
+                elif not (1 <= len(value) <= 200):
+                    errors.append("drive.client_id must be 1-200 characters")
+                else:
+                    merged[key] = value.strip()
+            elif section == "drive" and key in ("client_secret", "refresh_token"):
+                # Write-only secrets, like the bot token: empty clears.
+                if not isinstance(value, str):
+                    errors.append(f"drive.{key} must be a string")
+                elif value == "":
+                    merged[key] = None
+                elif not (1 <= len(value) <= 500):
+                    errors.append(f"drive.{key} must be 1-500 characters")
+                else:
+                    merged[key] = value
+            elif section == "drive" and key == "folder_name":
+                if not isinstance(value, str):
+                    errors.append("drive.folder_name must be a string")
+                elif not (1 <= len(value.strip()) <= 100):
+                    errors.append("drive.folder_name must be 1-100 characters")
                 else:
                     merged[key] = value.strip()
             elif section == "email" and key == "smtp_password":
@@ -718,13 +767,13 @@ def save_settings(config_path: str | Path, updates: dict) -> dict:
         except Exception:
             pass
     # File layout differs from the API grouping: llm/alerts/secret_gate/
-    # transfers/telegram/email/app_watch/delete_protect/explorer are nested
+    # transfers/telegram/email/drive/app_watch/delete_protect/explorer are nested
     # dicts in the yaml, but agent/backup keys live at the top level
     # (poll_interval_seconds, ...).
     local = _read_local_raw(cfg_path)
     for section, values in new_local.items():
-        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email", "app_watch",
-                       "delete_protect", "explorer"):
+        if section in ("llm", "alerts", "secret_gate", "transfers", "telegram", "email", "drive",
+                       "app_watch", "delete_protect", "explorer"):
             current = local.get(section)
             if not isinstance(current, dict):
                 current = {}
