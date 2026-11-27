@@ -233,6 +233,22 @@ def run_agent(config: Config, log: logging.Logger) -> int:
         except Exception as exc:  # the watch must never crash the agent
             log.warning("New-program watch did not start: %s", exc)
 
+    # File explorer (v12.9): browse drives/folders from Telegram and
+    # copy / move / send / hide files. Created before the bot so the
+    # bot can offer it; /hidden restores live here too.
+    file_explorer = None
+    if (config.explorer or {}).get("enabled", True):
+        try:
+            from deskaudit.file_explorer import FileExplorer
+
+            file_explorer = FileExplorer(
+                db, config.explorer, log,
+                project_root=config.project_root)
+            log.info("File explorer on: hidden folder at %s.",
+                     file_explorer.hidden_root)
+        except Exception as exc:  # the explorer must never crash the agent
+            log.warning("File explorer did not start: %s", exc)
+
     # Delete protection (v12.8): a deleted file is moved to a hidden
     # quarantine (another drive, when configured) instead of being
     # lost — the owner decides on Telegram (হ্যাঁ = purge, না = restore).
@@ -262,7 +278,8 @@ def run_agent(config: Config, log: logging.Logger) -> int:
                 config_path=config.project_root / "config.yaml",
                 projects_path=config.project_root / "projects.yaml",
                 tagger=tagger,
-                delete_protector=delete_protector)
+                delete_protector=delete_protector,
+                file_explorer=file_explorer)
             if telegram_bot.configured:
                 log.info("Telegram bot on: digests every %s min, commands polled.",
                          telegram_bot.settings.get("digest_minutes", 60))
@@ -629,6 +646,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Scan Recycle Bins + protected folders once and quarantine fresh deletes (test only)")
     parser.add_argument("--quarantine-list", action="store_true",
                         help="List files currently held in quarantine")
+    parser.add_argument("--explorer-test", nargs="?", const="", default=None,
+                        metavar="PATH",
+                        help="List drives, or one folder's entries")
+    parser.add_argument("--hidden-list", action="store_true",
+                        help="List files hidden from Telegram")
     parser.add_argument("--email-test", action="store_true",
                         help="Send a test email to the configured address")
     parser.add_argument("--email-now", action="store_true",
@@ -992,6 +1014,47 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             print(f"  #{row['id']} {row['file_name']} — was: {row['original_path']} "
                   f"[{row['source']}, {row['deleted_at']}]")
+        return 0
+
+    if args.explorer_test is not None:
+        from deskaudit.file_explorer import FileExplorer, list_dir
+
+        db = Database(config.db_path)
+        try:
+            explorer = FileExplorer(db, config.explorer, log,
+                                    project_root=config.project_root)
+            if not args.explorer_test:
+                roots = explorer.roots()
+                print("Drives/roots:")
+                for root in roots:
+                    print(f"  {root}")
+                print(f"Hidden folder: {explorer.hidden_root}")
+                return 0
+            result = list_dir(args.explorer_test, 0, explorer.page_size)
+            if result.get("error"):
+                print(f"Cannot open {args.explorer_test}: {result['error']}")
+                return 1
+            print(f"{result['path']} — {result['total']} entries "
+                  f"(page 1/{result['pages']}):")
+            for e in result["entries"]:
+                kind = "DIR " if e["is_dir"] else "FILE"
+                size = f" ({e['size']} B)" if e["size"] is not None else ""
+                print(f"  {kind} {e['name']}{size}")
+            return 0
+        finally:
+            db.close()
+
+    if args.hidden_list:
+        db = Database(config.db_path)
+        try:
+            rows = db.hidden_held(limit=50)
+        finally:
+            db.close()
+        if not rows:
+            print("No files hidden.")
+        for row in rows:
+            print(f"  #{row['id']} {row['file_name']} — was: {row['original_path']} "
+                  f"[hidden {row['hidden_at']}]")
         return 0
 
     if args.app_watch_test:

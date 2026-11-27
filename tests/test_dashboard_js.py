@@ -88,7 +88,7 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   await t.load();
   await t.loadSettings();
   const kpis = t.$('kpis').innerHTML;
-  check('15 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 15,
+  check('16 KPI cards', (kpis.match(/class="kpi"/g) || []).length === 16,
     (kpis.match(/class="kpi"/g) || []).length + ' found');
   check('hourly has 24 columns', (t.$('hourly').innerHTML.match(/class="col"/g) || []).length === 24);
   check('donut rendered', t.$('donut').innerHTML.includes('<svg'));
@@ -113,6 +113,10 @@ globalThis.fetch = (url, opts) => realFetch(base + url, opts);
   check('quarantine section rendered', t.$('quarantineSummary').innerHTML.includes('ডিলিট হয়েছে'));
   check('quarantine table has file', t.$('quarantineTable').innerHTML.includes('report.xlsx'));
   check('quarantine count badge', t.$('quarantineCount').textContent.includes('1'));
+  check('hidden section rendered', t.$('hiddenSummary').innerHTML.includes('হাইড হয়েছে'));
+  check('hidden table has file', t.$('hiddenTable').innerHTML.includes('secret.docx'));
+  check('hidden count badge', t.$('hiddenCount').textContent.includes('1'));
+  check('explorer settings loaded', String(t.$('set_explorer_page_size').value) === '20');
   check('delete-protect settings loaded', String(t.$('set_deleteprotect_poll_seconds').value) === '30');
   check('transfer table has USB copy', t.$('transferTable').innerHTML.includes('report.xlsx'));
   check('transfer table has cloud domain', t.$('transferTable').innerHTML.includes('drive.google.com'));
@@ -174,6 +178,9 @@ def test_dashboard_js_e2e():
     db.log_quarantined(date, "report.xlsx", r"D:\Office\report.xlsx",
                        "/q/held/abc123/report.xlsx", 1200000, "recycle_bin",
                        datetime.now().isoformat(timespec="seconds"))
+    db.log_hidden(date, "secret.docx", r"D:\Office\secret.docx",
+                  "/h/held/def456/secret.docx", 800000,
+                  datetime.now().isoformat(timespec="seconds"))
     db.close()
     (tmp / "config.yaml").write_text(
         "poll_interval_seconds: 5\nllm:\n  provider: gemini\n"

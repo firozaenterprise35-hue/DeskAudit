@@ -80,6 +80,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
   <section><h2>🔒 ডেটা ট্রান্সফার (Data Transfer) <span id="transferCount" class="badge"></span></h2><div id="transferSummary" class="muted">Loading…</div><table><thead><tr><th>When</th><th>Type</th><th>File / Channel</th><th>Destination</th><th>Size</th></tr></thead><tbody id="transferTable"></tbody></table><p class="muted">শুধু মেটাডেটা রেকর্ড হয় — ফাইলের নাম, সাইজ, কোথায় গেল, কখন, কোন অ্যাপ। মেসেজ / মেইলের ভেতরের লেখা, পাসওয়ার্ড বা টাইপ করা কিছুই পড়া হয় না। নিয়ম <code>config.yaml</code>-এর <code>transfers:</code> অংশে।</p></section>
 
   <section><h2>🗑️ মুছে যাওয়া ফাইল (Delete protection) <span id="quarantineCount" class="badge"></span></h2><div id="quarantineSummary" class="muted">Loading…</div><table><thead><tr><th>When</th><th>File</th><th>Was in</th><th>Size</th><th>Status</th></tr></thead><tbody id="quarantineTable"></tbody></table><p class="muted">ডিলিট করা ফাইল এখানে লুকিয়ে রাখা থাকে — ইউজারের চোখে ডিলিট হয়ে গেছে। Telegram-এ হ্যাঁ চাপলে পারমেনেন্টলি মুছে যাবে, না চাপলে আগের জায়গায় ফিরে আসবে। সিদ্ধান্ত না হওয়া পর্যন্ত কিছুই মোছা হয় না।</p></section>
+  <section><h2>🫥 লুকানো ফাইল (File explorer) <span id="hiddenCount" class="badge"></span></h2><div id="hiddenSummary" class="muted">Loading…</div><table><thead><tr><th>When</th><th>File</th><th>Was in</th><th>Size</th><th>Status</th></tr></thead><tbody id="hiddenTable"></tbody></table><p class="muted">Telegram থেকে /explore-এ হাইড করা ফাইল এখানে লুকিয়ে রাখা থাকে — আগের জায়গায় আর দেখা যায় না। /hidden লিখে ফিরিয়ে দেওয়া যায়।</p></section>
 
   <section><h2>📝 ডেইলি সামারি (লোকাল, বাংলা)</h2><div id="narrative" class="muted">Loading…</div></section>
 
@@ -213,6 +214,15 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:12px}
       <label><span>মিররের কপি কতদিন রাখবে (1–365)</span><input id="set_deleteprotect_mirror_retention_days" type="number" min="1" max="365"></label>
       <label><span>অতিরিক্ত সুরক্ষিত ফোল্ডার (কমা দিয়ে আলাদা করুন)</span><input id="set_deleteprotect_protected_folders" type="text" placeholder="D:/Accounts"></label>
     </div>
+    <h3>📂 ফাইল এক্সপ্লোরার (File explorer)</h3>
+    <p class="note">Telegram থেকে /explore লিখে ড্রাইভ/ফোল্ডার ঘুরে দেখা যায় — ফাইল কপি, মুভ, টেলিগ্রামে পাঠানো আর হাইড করা যায়। হাইড করলে ফাইলটা লুকানো ফোল্ডারে সরে যায় (শুধু /hidden থেকে ফেরানো যায়)। টেলিগ্রামে একটা ফাইল ৫০ MB পর্যন্ত পাঠানো যায়। সিস্টেম ফোল্ডারে কপি/মুভ/হাইড বন্ধ থাকে।</p>
+    <div class="settings-grid">
+      <label><input id="set_explorer_enabled" type="checkbox"> ফাইল এক্সপ্লোরার চালু</label>
+      <label><span>লুকানো ফাইল রাখার ফোল্ডার (খালি রাখলে DeskAudit-এর data/hidden)</span><input id="set_explorer_hidden_path" type="text" placeholder="E:/DeskAudit-Hidden"></label>
+      <label><span>এক পাতায় কয়টি ফাইল/ফোল্ডার দেখাবে (5–50)</span><input id="set_explorer_page_size" type="number" min="5" max="50"></label>
+      <label><span>টেলিগ্রামে পাঠানোর সর্বোচ্চ সাইজ (MB, 1–50)</span><input id="set_explorer_max_send_mb" type="number" min="1" max="50"></label>
+      <label><span>শুধু এই ড্রাইভ/ফোল্ডারগুলোই খোলা যাবে (খালি রাখলে সব ড্রাইভ; কমা দিয়ে আলাদা করুন)</span><input id="set_explorer_allowed_roots" type="text" placeholder="D:/, E:/Accounts"></label>
+    </div>
     <h3>ঘণ্টার ইমেইল (Hourly email)</h3>
     <p class="muted">প্রতি ঘণ্টায় একবার আপডেট ইমেইল যাবে — ব্যবহৃত অ্যাপ, ফাইল কাজ, ডেটা ট্রান্সফার, অ্যালার্ট। Gmail-এর জন্য 2-Step Verification চালু করে App Password বানান (Google Account → Security → App passwords), সেই ১৬ অক্ষরের পাসওয়ার্ড এখানে বসান। পাসওয়ার্ড দেখানো হয় না।</p>
     <div class="setgrid">
@@ -261,7 +271,7 @@ async function load(){
   if(s && s.error==='locked'){ location.reload(); return; }
   if(!s){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি — এজেন্ট চালু আছে কি না দেখুন।'); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি। এজেন্ট (DeskAudit) চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
   if(s.error){ setStatus('ড্যাশবোর্ড ডেটা লোড হয়নি: '+s.error); $('glance').innerHTML='<p class="muted">ডেটা লোড হয়নি: '+esc(s.error)+' — এজেন্ট চালু আছে কি না দেখুন, তারপর Refresh চাপুন।</p>'; return; }
-  state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); renderTransfers(s.transfers); renderQuarantined(s.quarantined); setStatus('Updated '+new Date().toLocaleTimeString());
+  state.summary=s; state.range=(r&&r.rows)||[]; render(); renderAlerts(a); renderNarrative(n); renderWeekly(w); renderTransfers(s.transfers); renderQuarantined(s.quarantined); renderHidden(s.hidden); setStatus('Updated '+new Date().toLocaleTimeString());
 }
 function renderAlerts(a){
   if(a&&a.error){ $('alertCount').textContent='!'; $('alertList').innerHTML='<p class="muted">অ্যালার্ট লোড হয়নি: '+esc(a.error)+'</p>'; return; }
@@ -286,6 +296,14 @@ function renderQuarantined(q){
   const rows=(q&&q.rows)||[];
   const labels={'recycle_bin':'Recycle Bin','mirror':'সুরক্ষিত ফোল্ডার','held':'সুরক্ষায়','restored':'ফিরিয়ে দেওয়া','purged':'পারমেনেন্টলি মোছা'};
   $('quarantineTable').innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.at)}</td><td>${esc(x.file)}</td><td>${esc(x.path)}</td><td>${x.size_bytes?esc((x.size_bytes/1024/1024>=1?(x.size_bytes/1024/1024).toFixed(1)+' MB':(x.size_bytes/1024).toFixed(1)+' KB')):'—'}</td><td>${esc(labels[x.status]||x.status)} (${esc(labels[x.source]||x.source)})</td></tr>`).join(''):'<tr><td colspan="5" class="muted">No deleted files quarantined.</td></tr>';
+}
+function renderHidden(h){
+  const total=(h&&h.total)||0; const held=(h&&h.held)||0;
+  $('hiddenCount').textContent=total?total+'টি':'কিছু নেই';
+  $('hiddenSummary').innerHTML=total?`<div>আজ হাইড হয়েছে ${total}টি — এখনো লুকানো আছে ${held}টি।</div>`:'<p class="muted">আজ কোনো ফাইল হাইড করা হয়নি।</p>';
+  const rows=(h&&h.rows)||[];
+  const labels={'hidden':'লুকানো','restored':'ফিরিয়ে দেওয়া','purged':'পারমেনেন্টলি মোছা'};
+  $('hiddenTable').innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.at)}</td><td>${esc(x.file)}</td><td>${esc(x.path)}</td><td>${x.size_bytes?esc((x.size_bytes/1024/1024>=1?(x.size_bytes/1024/1024).toFixed(1)+' MB':(x.size_bytes/1024).toFixed(1)+' KB')):'—'}</td><td>${esc(labels[x.status]||x.status)}</td></tr>`).join(''):'<tr><td colspan="5" class="muted">No files hidden.</td></tr>';
 }
 function renderNarrative(n){
   if(!n){$('narrative').innerHTML='<p class="muted">সামারি পাওয়া যায়নি।</p>';return}
@@ -315,6 +333,7 @@ function render(){
     ['Data transfers',k.transfers_total,'USB / cloud / email / print'],
     ['USB copies',k.usb_copies,'files copied onto USB'],
     ['Quarantined',k.quarantined_today,'deleted files held ('+k.quarantined_held+' now)'],
+    ['Hidden',k.hidden_today,'files hidden from Telegram ('+k.hidden_now+' now)'],
   ];
   $('kpis').innerHTML=cards.map(c=>`<div class="kpi"><div class="label">${c[0]}</div><div class="value">${esc(c[1])}</div><div class="note">${esc(c[2])}</div></div>`).join('');
   $('glance').innerHTML=`On <b>${esc(s.date)}</b> you were active <b>${fmt(s.active_seconds)}</b> and idle <b>${fmt(s.idle_seconds)}</b> across <b>${s.apps_used}</b> apps. Browser: <b>${fmt(s.browser.active_seconds)}</b> (${fmt(s.browser.productive_seconds)} productive, ${fmt(s.browser.distracting_seconds)} distracting). ${s.projects.length} project(s) worked on.`;
@@ -442,6 +461,13 @@ async function loadSettings(){
     setNum('set_deleteprotect_mirror_retention_days',s.delete_protect.mirror_retention_days);
     $('set_deleteprotect_protected_folders').value=(s.delete_protect.protected_folders||[]).join(', ');
   }
+  if(s.explorer){
+    setChk('set_explorer_enabled',s.explorer.enabled);
+    $('set_explorer_hidden_path').value=s.explorer.hidden_path||'';
+    setNum('set_explorer_page_size',s.explorer.page_size);
+    setNum('set_explorer_max_send_mb',s.explorer.max_send_mb);
+    $('set_explorer_allowed_roots').value=(s.explorer.allowed_roots||[]).join(', ');
+  }
   if(s.email){
     setChk('set_email_enabled',s.email.enabled);
     $('set_email_smtp_host').value=s.email.smtp_host||'';
@@ -507,6 +533,11 @@ async function saveSettings(){
   updates.delete_protect.protected_folders=$('set_deleteprotect_protected_folders').value;
   const dpInts={poll_seconds:'set_deleteprotect_poll_seconds',mirror_max_mb:'set_deleteprotect_mirror_max_mb',quarantine_max_gb:'set_deleteprotect_quarantine_max_gb',mirror_retention_days:'set_deleteprotect_mirror_retention_days'};
   for(const [k,id] of Object.entries(dpInts)){const v=num(id); if(v!==null) updates.delete_protect[k]=v}
+  updates.explorer={enabled:$('set_explorer_enabled').checked};
+  updates.explorer.hidden_path=$('set_explorer_hidden_path').value;
+  updates.explorer.allowed_roots=$('set_explorer_allowed_roots').value;
+  const exInts={page_size:'set_explorer_page_size',max_send_mb:'set_explorer_max_send_mb'};
+  for(const [k,id] of Object.entries(exInts)){const v=num(id); if(v!==null) updates.explorer[k]=v}
   updates.email={enabled:$('set_email_enabled').checked,use_tls:$('set_email_use_tls').checked};
   const pw=$('set_email_smtp_password').value.trim();
   if($('set_email_clear_password').checked) updates.email.smtp_password='';

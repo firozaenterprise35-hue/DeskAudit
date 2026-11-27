@@ -241,7 +241,7 @@ Settings page — saved to `config.local.yaml`): `enabled`, `poll_seconds`
 `communication_alert_minutes`, `large_transfer_mb`, `usb_alert`,
 `print_alert`, `sensitive_copy_alert`.
 
-## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8)
+## Telegram bot + hourly email (v12, full data in v12.1, remote control in v12.2, screenshots + screen + power in v12.3, audit fixes in v12.4, new-program alerts in v12.5, dashboard PIN lock in v12.6, anonymous unlock in v12.7, delete protection in v12.8, Telegram file explorer in v12.9)
 
 The agent can report to you while you are away — in Bengali, on your
 phone and in your inbox. Both are off until you configure them in
@@ -444,6 +444,37 @@ restores it to the exact same place.
   gate dropped it). The whitelist now lists `app_watch` and
   `delete_protect`.
 
+**Telegram file explorer (v12.9)** — the owner asked: from Telegram,
+explore the PC's drives and folders, and copy, move, transfer and hide
+the files she needs.
+- `/explore` shows the drives (C:, D:, E:, F:, G: — or only the
+  configured `allowed_roots`, when set), then folders and files with
+  name/size/date, 20 per page. Buttons navigate: a folder opens, ⬆️
+  goes up, 🏠 returns to the drives. The browsing view is ONE message
+  that is edited on every tap, so the chat is not spammed.
+- Tapping a file offers four actions: 📥 **টেলিগ্রামে পাঠাও** (the file
+  arrives in her chat as a document), 📋 **কপি করো**, ➡️ **মুভ করো**,
+  👁️ **হাইড করো**. For copy/move she picks the destination by
+  browsing to it and tapping 📍 “এখানেই কপি/মুভ করো”, then confirms
+  (token-bound, like every other destructive action).
+- **Hide is the strong hide:** the file is MOVED into a hidden folder
+  (default `data/hidden`, or `explorer.hidden_path`, e.g.
+  `E:/DeskAudit-Hidden`) and recorded in a new `hidden_files` table —
+  never just the Windows "hidden" flag, which anyone can undo by
+  showing hidden files. `/hidden` lists what is hidden with a
+  ↩️ ফিরিয়ে দাও button per file; a restore recreates the original
+  folder and renames with a timestamp if a new file took its place.
+- **Honest limits:** Telegram's Bot API sends at most ~50 MB per file
+  (`max_send_mb`, 1–50) — bigger files can only be copied/moved to
+  another drive, never sent. Only files can be copied/moved/sent/
+  hidden in v12.9 (folders can be opened, nothing more). Copy, move
+  and hide are blocked inside system folders (Windows, Program Files,
+  ...) so a wrong tap can never break Windows.
+- Dashboard: a **🫥 লুকানো ফাইল** section, a 16th KPI card (Hidden),
+  `/api/hidden`, and a Settings block (hidden folder, page size, send
+  limit, allowed roots). CLI: `--explorer-test [PATH]` (drives, or one
+  folder's entries) and `--hidden-list`.
+
 Setup: in Telegram, talk to **@BotFather** → `/newbot` → copy the token.
 Send `/start` to your new bot, then open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and read
@@ -533,6 +564,7 @@ DeskAudit/
 │   ├── telegram.py          # Telegram bot: status / digest / critical alerts, /status /today commands
 │   ├── app_watch.py         # Real-time new-program watch: baseline + new process alerts (v12.5)
 │   ├── delete_protect.py    # Delete protection: Recycle Bin watch + mirror + quarantine (v12.8)
+│   ├── file_explorer.py     # Telegram file explorer: browse/copy/move/send/hide (v12.9)
 │   ├── screenshot.py        # Screen capture (ctypes BitBlt + stdlib PNG encoder, Windows only)
 │   ├── screen_blank.py      # Fullscreen white/black overlay window (Windows only)
 │   ├── emailer.py           # Hourly email digest via SMTP (plain text + HTML)
@@ -574,6 +606,7 @@ DeskAudit/
     ├── test_silent.py       # Silent child-process launches, no console flash (v12.5)
     ├── test_dashboard_lock.py  # Dashboard PIN lock (v12.6)
     ├── test_delete_protect.py  # Recycle Bin + mirror + quarantine + Telegram হ্যাঁ/না (v12.8)
+    ├── test_file_explorer.py   # Browse/copy/move/send/hide + /hidden + settings (v12.9)
     └── test_windowed.py     # Windowed-exe (no console) checks
 ```
 
@@ -601,7 +634,7 @@ project folder, and delete it to resume. Useful for private work.
 
 ## Windows .exe & installer (no Python needed)
 
-**Easiest:** download `DeskAudit-Setup-12.8.exe` (Google Drive link from
+**Easiest:** download `DeskAudit-Setup-12.9.exe` (Google Drive link from
 Muse) and double-click it. It installs per-user to
 `%LOCALAPPDATA%\DeskAudit` (no admin needed), adds Start Menu shortcuts
 (DeskAudit, DeskAudit Dashboard, Schedule 9pm daily job, Stop DeskAudit),
@@ -640,17 +673,17 @@ The agent serves the dashboard itself while it runs, so no separate
 gate off) in `config.yaml` under `secret_gate:` or from the dashboard
 Settings page. Nothing about the gate is logged.
 
-**Portable (no install):** unzip the `DeskAudit-v12.8-Windows-exe.zip`
+**Portable (no install):** unzip the `DeskAudit-v12.9-Windows-exe.zip`
 and run `DeskAudit\DeskAudit.exe` directly — no Python needed.
 
 **Build it yourself on Windows:**
 ```bat
 build_exe.bat            REM builds dist\DeskAudit\DeskAudit.exe (PyInstaller)
-installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.8.exe (needs Inno Setup 6)
+installer\build_installer.bat   REM builds installer\Output\DeskAudit-Setup-12.9.exe (needs Inno Setup 6)
 ```
 On Linux the same exe is built with Wine (Windows Python + PyInstaller)
 and the installer with NSIS (`makensis installer\DeskAudit.nsi`, which
-produces the same `installer\Output\DeskAudit-Setup-12.8.exe`).
+produces the same `installer\Output\DeskAudit-Setup-12.9.exe`).
 A GitHub Actions workflow (`.github/workflows/build-windows.yml`) also
 builds both files on every push to `main` and attaches them to
 Release v10.0 — it needs the workflow file added to the repo first

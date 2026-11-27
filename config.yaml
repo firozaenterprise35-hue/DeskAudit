@@ -213,6 +213,25 @@ delete_protect:
   mirror_retention_days: 30
   protected_folders: []
 
+# --- Telegram file explorer -------------------------------------------
+# Browse drives and folders from Telegram (/explore) and copy / move /
+# send / hide files — only the owner's chat may do it.
+# - allowed_roots: [] = every drive is browsable. Set it to limit the
+#   explorer, e.g. ["D:/", "E:/Accounts"].
+# - hidden_path: "" = <install folder>/data/hidden. Hide MOVES the file
+#   there (strong hide, like the v12.8 quarantine) — never just the
+#   Windows "hidden" flag, which anyone can undo by showing hidden files.
+# - max_send_mb: Telegram's Bot API sends at most ~50 MB per file;
+#   bigger files can only be copied/moved to another drive.
+# - Copy / move / hide are blocked inside system folders (Windows,
+#   Program Files, ...) so a wrong tap can never break Windows.
+explorer:
+  enabled: true
+  allowed_roots: []
+  hidden_path: ""
+  page_size: 20
+  max_send_mb: 50
+
 # --- Hourly email digest ----------------------------------------------
 # One digest email every interval_minutes to your own address (SMTP).
 # Gmail route: 2-Step Verification on, then an App Password for

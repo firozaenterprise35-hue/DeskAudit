@@ -6,7 +6,7 @@
 ; agent can write its data/, reports/ and backups/ folders next to the exe.
 
 #define MyAppName "DeskAudit"
-#define MyAppVersion "12.8"
+#define MyAppVersion "12.9"
 #define MyAppPublisher "Firoza"
 #define MyAppExeName "DeskAudit.exe"
 

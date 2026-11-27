@@ -168,6 +168,23 @@ CREATE TABLE IF NOT EXISTS quarantined_files (
 );
 CREATE INDEX IF NOT EXISTS idx_quarantined_date ON quarantined_files(date);
 CREATE INDEX IF NOT EXISTS idx_quarantined_status ON quarantined_files(status);
+-- File explorer (see file_explorer.py). A file the owner hides from
+-- Telegram is MOVED here instead of merely flagged: the row records
+-- where it came from, so it can be restored to the same place.
+CREATE TABLE IF NOT EXISTS hidden_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    file_name TEXT DEFAULT '',
+    original_path TEXT DEFAULT '',
+    hidden_path TEXT DEFAULT '',
+    size_bytes INTEGER,
+    status TEXT DEFAULT 'hidden',   -- hidden | restored | purged
+    hidden_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    decided_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_hidden_date ON hidden_files(date);
+CREATE INDEX IF NOT EXISTS idx_hidden_status ON hidden_files(status);
 -- Project indexes are created in _migrate_project_columns(), after the
 -- project/tags columns exist (fresh DBs get them there too).
 """
@@ -917,6 +934,58 @@ class Database:
     def quarantined_count(self, date: str) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM quarantined_files WHERE date = ?",
+            (date,)).fetchone()
+        return int(row["n"] or 0)
+
+    def log_hidden(self, date: str, file_name: str, original_path: str,
+                   hidden_path: str, size_bytes: int | None = None,
+                   hidden_at: str | None = None) -> int:
+        """Record a file moved to the hidden folder. Returns the row id."""
+        from datetime import datetime as _dt
+
+        when = hidden_at or _dt.now().isoformat(timespec="seconds")
+        cur = self.conn.execute(
+            """INSERT INTO hidden_files
+               (date, file_name, original_path, hidden_path, size_bytes,
+                status, hidden_at, created_at)
+               VALUES (?, ?, ?, ?, ?, 'hidden', ?, ?)""",
+            (date, file_name, original_path, hidden_path, size_bytes,
+             when, _dt.now().isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def get_hidden(self, hid: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM hidden_files WHERE id = ?", (hid,)).fetchone()
+
+    def set_hidden_status(self, hid: int, status: str) -> bool:
+        from datetime import datetime as _dt
+
+        cur = self.conn.execute(
+            """UPDATE hidden_files SET status = ?, decided_at = ?
+               WHERE id = ? AND status = 'hidden'""",
+            (status, _dt.now().isoformat(timespec="seconds"), hid))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def hidden_for_date(self, date: str, limit: int | None = 100) -> list[sqlite3.Row]:
+        if limit is None:
+            return self.conn.execute(
+                """SELECT * FROM hidden_files WHERE date = ?
+                   ORDER BY hidden_at DESC""", (date,)).fetchall()
+        return self.conn.execute(
+            """SELECT * FROM hidden_files WHERE date = ?
+               ORDER BY hidden_at DESC LIMIT ?""", (date, limit)).fetchall()
+
+    def hidden_held(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM hidden_files WHERE status = 'hidden'
+               ORDER BY hidden_at DESC LIMIT ?""", (limit,)).fetchall()
+
+    def hidden_count(self, date: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM hidden_files WHERE date = ?",
             (date,)).fetchone()
         return int(row["n"] or 0)
 
